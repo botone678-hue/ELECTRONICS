@@ -97,7 +97,7 @@ const AppContent: React.FC = () => {
       <Footer onNavigate={navigateTo} />
       <FloatingActions onNavigate={navigateTo} />
       <MobileDrawer isOpen={isMobileDrawerOpen} onClose={() => setIsMobileDrawerOpen(false)} categories={categories} onNavigate={navigateTo} onOpenAuthModal={() => handleOpenAuth('login')} />
-      <CartDrawer isOpen={isCartDrawerOpen} onClose={() => setIsCartDrawerOpen(false)} onProceedToCheckout={() => { setIsCartDrawerOpen(false); navigateTo('checkout'); }} onNavigateToShop={() => navigateTo('shop')} />
+      <CartDrawer isOpen={isCartDrawerOpen} onClose={() => setIsCartDrawerOpen(false)} onNavigateToCheckout={() => { setIsCartDrawerOpen(false); navigateTo('checkout'); }} onNavigateToShop={() => navigateTo('shop')} />
       {selectedProduct && <ProductDetailModal product={selectedProduct} onClose={() => setSelectedProduct(null)} onBuyNowWithCOD={() => { setSelectedProduct(null); navigateTo('checkout'); }} />}
       <AuthModal isOpen={isAuthModalOpen} initialTab={authModalInitialTab} onClose={() => setIsAuthModalOpen(false)} />
     </div>
