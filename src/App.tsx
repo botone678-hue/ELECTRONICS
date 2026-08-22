@@ -82,7 +82,7 @@ const AppContent: React.FC = () => {
   return (
     <div className="min-h-screen flex flex-col bg-[#09090b] font-sans antialiased text-zinc-100 selection:bg-red-600 selection:text-white">
       <AnnouncementBar />
-      <Header activeView={activeView} categories={categories} onNavigate={navigateTo} onOpenCart={() => setIsCartDrawerOpen(true)} onOpenMobileMenu={() => setIsMobileDrawerOpen(true)} onOpenAuth={() => handleOpenAuth('login')} />
+      <Header activeView={activeView} categories={categories} onNavigate={navigateTo} onOpenMobileMenu={() => setIsMobileDrawerOpen(true)} onOpenAuth={() => handleOpenAuth('login')} />
       <main className="flex-grow">
         {activeView === 'home' && <HomeView products={products} categories={categories} isLoading={isLoadingProducts} onSelectProduct={setSelectedProduct} onNavigate={navigateTo} />}
         {activeView === 'shop' && <ShopView initialCategoryId={navExtra?.categoryId} initialSubcategory={navExtra?.subcategory} initialSearch={navExtra?.search} categories={categories} onSelectProduct={setSelectedProduct} />}
