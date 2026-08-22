@@ -11,13 +11,7 @@ const mapOrder = (row: any, items: any[] = []) => ({
   customerName: row.customer_name,
   customerPhone: row.customer_phone,
   customerEmail: row.customer_email || undefined,
-  deliveryLocation: {
-    county: row.county,
-    town: row.town,
-    estate: row.estate,
-    landmark: row.landmark || '',
-    instructions: row.instructions || ''
-  },
+  deliveryLocation: { county: row.county, town: row.town, estate: row.estate, landmark: row.landmark || '', instructions: row.instructions || '' },
   deliveryZoneId: row.delivery_zone_id,
   deliveryZoneName: row.delivery_zone_name,
   deliveryFee: Number(row.delivery_fee),
@@ -27,15 +21,7 @@ const mapOrder = (row: any, items: any[] = []) => ({
   paymentStatus: row.payment_status,
   status: row.status,
   statusHistory: row.status_history || [],
-  items: items.map((i: any) => ({
-    productId: i.product_id,
-    productName: i.product_name,
-    sku: i.sku,
-    image: i.image || '',
-    priceSnapshot: Number(i.price_snapshot),
-    quantity: i.quantity,
-    subtotal: Number(i.subtotal)
-  })),
+  items: items.map((i: any) => ({ productId: i.product_id, productName: i.product_name, sku: i.sku, image: i.image || '', priceSnapshot: Number(i.price_snapshot), quantity: i.quantity, subtotal: Number(i.subtotal) })),
   createdAt: row.created_at,
   updatedAt: row.updated_at
 });
@@ -58,52 +44,44 @@ async function loadOrderByNumber(orderNumber: string) {
 
 const handleCheckout = async (req: AuthRequest, res: Response) => {
   try {
-    if (!isServerSupabaseConfigured) {
-      return res.status(503).json({ error: 'Production database is not configured.' });
-    }
+    if (!isServerSupabaseConfigured) return res.status(503).json({ error: 'Production database is not configured.' });
 
-    const {
-      customerName, customerPhone, customerEmail, deliveryLocation,
-      deliveryCounty, deliveryTown, deliveryEstate, deliveryLandmark,
-      deliveryInstructions, zoneId, deliveryZoneId, paymentMethod, items
-    } = req.body;
+    const { customerName, customerPhone, customerEmail, deliveryLocation, deliveryCounty, deliveryTown, deliveryEstate, deliveryLandmark, deliveryInstructions, zoneId, deliveryZoneId, paymentMethod, items } = req.body;
 
     const location = typeof deliveryLocation === 'object' && deliveryLocation !== null
-      ? {
-          county: deliveryLocation.county || deliveryCounty || 'Uasin Gishu',
-          town: deliveryLocation.town || deliveryTown || '',
-          estate: deliveryLocation.estate || deliveryEstate || '',
-          landmark: deliveryLocation.landmark || deliveryLandmark || '',
-          instructions: deliveryLocation.instructions || deliveryInstructions || ''
-        }
-      : {
-          county: deliveryCounty || 'Uasin Gishu',
-          town: deliveryTown || (typeof deliveryLocation === 'string' ? deliveryLocation : ''),
-          estate: deliveryEstate || (typeof deliveryLocation === 'string' ? deliveryLocation : ''),
-          landmark: deliveryLandmark || '',
-          instructions: deliveryInstructions || ''
-        };
+      ? { county: deliveryLocation.county || deliveryCounty || 'Uasin Gishu', town: deliveryLocation.town || deliveryTown || '', estate: deliveryLocation.estate || deliveryEstate || '', landmark: deliveryLocation.landmark || deliveryLandmark || '', instructions: deliveryLocation.instructions || deliveryInstructions || '' }
+      : { county: deliveryCounty || 'Uasin Gishu', town: deliveryTown || (typeof deliveryLocation === 'string' ? deliveryLocation : ''), estate: deliveryEstate || (typeof deliveryLocation === 'string' ? deliveryLocation : ''), landmark: deliveryLandmark || '', instructions: deliveryInstructions || '' };
 
-    if (!location.town && !location.estate) {
-      return res.status(400).json({ error: 'Please provide complete delivery details (Town and Estate).' });
-    }
+    if (!location.town && !location.estate) return res.status(400).json({ error: 'Please provide complete delivery details (Town and Estate).' });
     if (!location.town) location.town = location.estate;
     if (!location.estate) location.estate = location.town;
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Cart is empty. Please add products to your cart.' });
+    if (!items || !Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Cart is empty. Please add products to your cart.' });
+
+    const normalizedItems = items.map((item: any) => ({ productId: String(item.productId), quantity: Number(item.quantity) }));
+    const normalizedPaymentMethod = paymentMethod === 'MPESA_ON_DELIVERY' ? 'MPESA_ON_DELIVERY' : 'CASH_ON_DELIVERY';
+    const requestedCustomerId = req.user?.id || null;
+
+    // orders.customer_id has a foreign key to profiles(id). A newly-created
+    // auth user can exist before its profile row is created. Passing that auth
+    // UUID to place_order causes the RPC to fail with a FK violation. Resolve
+    // the profile first; if it does not exist, place the order as a guest/null
+    // customer instead. The customer's submitted contact details remain on the order.
+    let customerId: string | null = null;
+    if (requestedCustomerId) {
+      const { data: profile, error: profileError } = await serverSupabase
+        .from('profiles')
+        .select('id')
+        .eq('id', requestedCustomerId)
+        .maybeSingle();
+      if (profileError) {
+        console.warn('[checkout][profile-lookup]', profileError.message);
+      } else if (profile?.id) {
+        customerId = profile.id;
+      }
     }
 
-    const normalizedItems = items.map((item: any) => ({
-      productId: String(item.productId),
-      quantity: Number(item.quantity)
-    }));
-
-    const normalizedPaymentMethod = paymentMethod === 'MPESA_ON_DELIVERY'
-      ? 'MPESA_ON_DELIVERY'
-      : 'CASH_ON_DELIVERY';
-
     const { data, error } = await serverSupabase.rpc('place_order', {
-      p_customer_id: req.user?.id || null,
+      p_customer_id: customerId,
       p_customer_name: customerName,
       p_customer_phone: customerPhone,
       p_customer_email: customerEmail || null,
@@ -124,9 +102,6 @@ const handleCheckout = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: clientError });
     }
 
-    // The database function is the source of truth for successful order creation.
-    // Do not turn a successful order into a 500 merely because the follow-up read
-    // is blocked by RLS/schema drift. Return the identifiers immediately.
     const orderId = data?.order_id;
     const orderNumber = data?.order_number;
     if (!orderId || !orderNumber) {
@@ -134,27 +109,11 @@ const handleCheckout = async (req: AuthRequest, res: Response) => {
       return res.status(500).json({ error: 'Order creation returned an invalid response. Please try again.' });
     }
 
-    let order: any = {
-      id: orderId,
-      orderNumber,
-      customerId: req.user?.id || undefined,
-      customerName,
-      customerPhone,
-      customerEmail: customerEmail || undefined,
-      deliveryLocation: location,
-      deliveryZoneId: deliveryZoneId || zoneId || 'zone-eldoret-cbd',
-      paymentMethod: normalizedPaymentMethod,
-      paymentStatus: 'PENDING',
-      status: 'ORDER_RECEIVED',
-      items: normalizedItems,
-    };
-
+    let order: any = { id: orderId, orderNumber, customerId: customerId || undefined, customerName, customerPhone, customerEmail: customerEmail || undefined, deliveryLocation: location, deliveryZoneId: deliveryZoneId || zoneId || 'zone-eldoret-cbd', paymentMethod: normalizedPaymentMethod, paymentStatus: 'PENDING', status: 'ORDER_RECEIVED', items: normalizedItems };
     try {
       const loaded = await loadOrder(orderId);
       if (loaded) order = loaded;
     } catch (readError) {
-      // The order has already been committed by place_order. Log the read failure,
-      // but never report the checkout itself as failed.
       console.error('[checkout][post-create-read]', readError);
     }
 
@@ -172,11 +131,7 @@ orderRouter.get('/track/:query', async (req, res) => {
   try {
     const clean = req.params.query.trim();
     let order = await loadOrderByNumber(clean);
-
-    if (!order) {
-      order = await loadOrder(clean);
-    }
-
+    if (!order) order = await loadOrder(clean);
     if (!order) {
       const normalized = clean.replace(/\s+/g, '');
       const { data: rows, error } = await serverSupabase.from('orders').select('*').order('created_at', { ascending: false });
@@ -184,7 +139,6 @@ orderRouter.get('/track/:query', async (req, res) => {
       const match = (rows || []).find((r: any) => r.customer_phone.replace(/\s+/g, '') === normalized);
       if (match) order = await loadOrder(match.id);
     }
-
     if (!order) return res.status(404).json({ error: `No order found for "${clean}". Please check your order number or phone number.` });
     return res.json({ order });
   } catch (err: any) {
@@ -207,11 +161,7 @@ orderRouter.get('/:id', optionalAuth, async (req: AuthRequest, res: Response) =>
   try {
     const order = await loadOrder(req.params.id);
     if (!order) return res.status(404).json({ error: 'Order not found.' });
-
-    if (req.user && req.user.role === 'customer' && order.customerId && order.customerId !== req.user.id) {
-      return res.status(403).json({ error: 'Unauthorized to view this order.' });
-    }
-
+    if (req.user && req.user.role === 'customer' && order.customerId && order.customerId !== req.user.id) return res.status(403).json({ error: 'Unauthorized to view this order.' });
     return res.json({ order });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Error loading order.' });
