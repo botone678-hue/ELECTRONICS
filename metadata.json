@@ -1,0 +1,6 @@
+{
+  "name": "MEGA CITY ELECTRONICS",
+  "description": "Premier Kenyan e-commerce platform for electrical accessories, electronics, audio, TVs, and home appliances with Cash on Delivery and real-time order synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
