@@ -16,36 +16,24 @@ export interface AuthRequest extends Request {
 }
 
 export function generateToken(user: { id: string; email: string; role: UserRole; name: string }): string {
-  if (!JWT_SECRET) {
-    // If no secret configured, generate a random temporary session token
-    return `session_${Buffer.from(JSON.stringify({ id: user.id, email: user.email, role: user.role, name: user.name, ts: Date.now() })).toString('base64url')}`;
-  }
-  return jwt.sign(
-    {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      name: user.name
-    },
-    JWT_SECRET,
-    { expiresIn: '30d' }
-  );
+  if (!JWT_SECRET) return `session_${Buffer.from(JSON.stringify({ id: user.id, email: user.email, role: user.role, name: user.name, ts: Date.now() })).toString('base64url')}`;
+  return jwt.sign({ id: user.id, email: user.email, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '30d' });
 }
 
 export async function verifyToken(token: string) {
   if (!token) return null;
 
-  // 1. If Supabase is configured, verify via Supabase Auth
   if (isServerSupabaseConfigured) {
     try {
       const { data: { user }, error } = await serverSupabase.auth.getUser(token);
       if (!error && user) {
-        // Fetch role from profiles
+        // A missing profile is valid for a newly-created customer. Do not use
+        // .single(), which turns that normal case into a 406 response.
         const { data: profile } = await serverSupabase
           .from('profiles')
-          .select('*')
+          .select('id,role,name')
           .eq('id', user.id)
-          .single();
+          .maybeSingle();
 
         return {
           id: user.id,
@@ -54,16 +42,14 @@ export async function verifyToken(token: string) {
           name: profile?.name || user.user_metadata?.name || user.email?.split('@')[0] || 'User'
         };
       }
-    } catch {
-      // Fallback
+    } catch (error) {
+      console.warn('[auth][verifyToken] Supabase verification failed; continuing with fallback:', error instanceof Error ? error.message : error);
     }
   }
 
-  // 2. Fallback token decode
   if (token.startsWith('session_')) {
     try {
-      const jsonStr = Buffer.from(token.replace('session_', ''), 'base64url').toString('utf-8');
-      return JSON.parse(jsonStr);
+      return JSON.parse(Buffer.from(token.replace('session_', ''), 'base64url').toString('utf-8'));
     } catch {
       return null;
     }
@@ -71,12 +57,7 @@ export async function verifyToken(token: string) {
 
   if (JWT_SECRET) {
     try {
-      return jwt.verify(token, JWT_SECRET) as {
-        id: string;
-        email: string;
-        role: UserRole;
-        name: string;
-      };
+      return jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: UserRole; name: string };
     } catch {
       return null;
     }
@@ -86,40 +67,43 @@ export async function verifyToken(token: string) {
 }
 
 export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Authentication required. Please sign in.' });
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'Authentication required. Please sign in.' });
+    const decoded = await verifyToken(authHeader.slice(7));
+    if (!decoded) return res.status(401).json({ error: 'Invalid or expired session. Please sign in again.' });
+    req.user = decoded;
+    return next();
+  } catch (error) {
+    console.error('[auth][requireAuth]', error);
+    return res.status(401).json({ error: 'Authentication could not be verified. Please sign in again.' });
   }
-
-  const token = authHeader.split(' ')[1];
-  const decoded = await verifyToken(token);
-  if (!decoded) {
-    return res.status(401).json({ error: 'Invalid or expired session. Please sign in again.' });
-  }
-
-  req.user = decoded;
-  next();
 }
 
-export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
-  requireAuth(req, res, () => {
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    next();
-  });
+export async function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    await requireAuth(req, res, () => {
+      if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+      return next();
+    });
+  } catch (error) {
+    console.error('[auth][requireAdmin]', error);
+    return res.status(401).json({ error: 'Authentication could not be verified.' });
+  }
 }
 
 export async function optionalAuth(req: AuthRequest, _res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
-    const decoded = await verifyToken(token);
-    if (decoded) {
-      req.user = decoded;
+  try {
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      const decoded = await verifyToken(authHeader.slice(7));
+      if (decoded) req.user = decoded;
     }
+  } catch (error) {
+    // Optional authentication must never prevent checkout from reaching the order route.
+    console.warn('[auth][optionalAuth] ignored authentication error:', error instanceof Error ? error.message : error);
   }
-  next();
+  return next();
 }
 
 export function sanitizeUser(user: any) {
