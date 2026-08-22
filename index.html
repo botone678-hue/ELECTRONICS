@@ -15,7 +15,24 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Production image resilience: the catalog currently uses remote Unsplash
+      // assets. If a remote image is blocked/rate-limited, retry it through the
+      // image proxy without changing the stored catalog URLs.
+      (() => {
+        const PROXY_PREFIX = 'https://images.weserv.nl/?url=';
+        const retried = new WeakSet();
+
+        window.addEventListener('error', (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLImageElement)) return;
+          const src = target.currentSrc || target.src;
+          if (!src || retried.has(target) || src.startsWith(PROXY_PREFIX)) return;
+          retried.add(target);
+          target.src = PROXY_PREFIX + encodeURIComponent(src);
+        }, true);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
