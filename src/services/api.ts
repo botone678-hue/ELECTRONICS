@@ -30,33 +30,28 @@ async function handleResponse<T>(res: Response): Promise<T> {
 }
 
 function mapCategory(row: any): Category {
-  return {
-    id: row.id, name: row.name, slug: row.slug, description: row.description || '',
-    icon: row.icon || 'Package', imageUrl: row.image_url || '', subcategories: row.subcategories || []
-  };
+  return { id: row.id, name: row.name, slug: row.slug, description: row.description || '', icon: row.icon || 'Package', imageUrl: row.image_url || '', subcategories: row.subcategories || [] };
 }
 
 function mapProduct(row: any): Product {
+  return { id: row.id, name: row.name, slug: row.slug, sku: row.sku, brand: row.brand, categoryId: row.category_id, categoryName: row.category_name, subcategory: row.subcategory, description: row.description, price: Number(row.price), compareAtPrice: row.compare_at_price == null ? undefined : Number(row.compare_at_price), discountPercent: row.discount_percent == null ? undefined : Number(row.discount_percent), stockQuantity: Number(row.stock_quantity), lowStockThreshold: Number(row.low_stock_threshold), warranty: row.warranty, featured: Boolean(row.featured), isHotDeal: Boolean(row.hot_deal), isNew: Boolean(row.is_new), isActive: Boolean(row.is_active), images: Array.isArray(row.images) ? row.images : [], specifications: row.specifications || {}, rating: Number(row.rating || 5), reviewCount: Number(row.review_count || 0), createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+function mapSettings(row: any): BusinessSettings {
   return {
-    id: row.id, name: row.name, slug: row.slug, sku: row.sku, brand: row.brand,
-    categoryId: row.category_id, categoryName: row.category_name, subcategory: row.subcategory,
-    description: row.description, price: Number(row.price), compareAtPrice: row.compare_at_price == null ? undefined : Number(row.compare_at_price),
-    discountPercent: row.discount_percent == null ? undefined : Number(row.discount_percent),
-    stockQuantity: Number(row.stock_quantity), lowStockThreshold: Number(row.low_stock_threshold), warranty: row.warranty,
-    featured: Boolean(row.featured), isHotDeal: Boolean(row.hot_deal), isNew: Boolean(row.is_new), isActive: Boolean(row.is_active),
-    images: Array.isArray(row.images) ? row.images : [], specifications: row.specifications || {},
-    rating: Number(row.rating || 5), reviewCount: Number(row.review_count || 0),
-    createdAt: row.created_at, updatedAt: row.updated_at
+    businessName: row.store_name || 'MEGA CITY ELECTRONICS',
+    phone: row.phone || '0741775878',
+    whatsapp: row.whatsapp || row.phone || '0741775878',
+    location: row.location || 'Along Zion Mall, Kenya',
+    businessHours: row.business_hours || 'Mon - Sat: 8:00 AM - 8:00 PM | Sun: 10:00 AM - 6:00 PM',
+    announcementText: row.announcement || '',
+    freeDeliveryThreshold: row.free_delivery_banner ? Number(String(row.free_delivery_banner).replace(/[^0-9.]/g, '')) || 20000 : 20000,
+    acceptOrders: row.is_accepting_orders !== false
   };
 }
 
 export const api = {
-  // Production catalog reads come directly from Supabase. This avoids depending on an Express server
-  // that is not part of the Vercel static/Vite deployment.
-  async getProducts(params?: {
-    categoryId?: string; subcategory?: string; brand?: string; minPrice?: number; maxPrice?: number;
-    featured?: boolean; isHotDeal?: boolean; inStockOnly?: boolean; search?: string; sort?: string; limit?: number; offset?: number;
-  }): Promise<{ products: Product[]; total: number }> {
+  async getProducts(params?: { categoryId?: string; subcategory?: string; brand?: string; minPrice?: number; maxPrice?: number; featured?: boolean; isHotDeal?: boolean; inStockOnly?: boolean; search?: string; sort?: string; limit?: number; offset?: number; }): Promise<{ products: Product[]; total: number }> {
     let query = supabase.from('products').select('*', { count: 'exact' }).eq('is_active', true);
     if (params?.categoryId) query = query.eq('category_id', params.categoryId);
     if (params?.subcategory) query = query.ilike('subcategory', params.subcategory);
@@ -66,62 +61,22 @@ export const api = {
     if (params?.featured !== undefined) query = query.eq('featured', params.featured);
     if (params?.isHotDeal !== undefined) query = query.eq('hot_deal', params.isHotDeal);
     if (params?.inStockOnly) query = query.gt('stock_quantity', 0);
-    if (params?.search) {
-      const q = params.search.replace(/[%(),]/g, ' ').trim();
-      if (q) query = query.or(`name.ilike.%${q}%,brand.ilike.%${q}%,sku.ilike.%${q}%,category_name.ilike.%${q}%,subcategory.ilike.%${q}%`);
-    }
+    if (params?.search) { const q = params.search.replace(/[%(),]/g, ' ').trim(); if (q) query = query.or(`name.ilike.%${q}%,brand.ilike.%${q}%,sku.ilike.%${q}%,category_name.ilike.%${q}%,subcategory.ilike.%${q}%`); }
     const ascending = params?.sort === 'price-asc';
     if (params?.sort === 'price-asc' || params?.sort === 'price-desc') query = query.order('price', { ascending });
     else if (params?.sort === 'newest') query = query.order('created_at', { ascending: false });
     else if (params?.sort === 'rating') query = query.order('rating', { ascending: false });
     else query = query.order('featured', { ascending: false }).order('hot_deal', { ascending: false }).order('created_at', { ascending: false });
-    const offset = params?.offset || 0;
-    const limit = Math.min(params?.limit || 100, 1000);
-    query = query.range(offset, offset + limit - 1);
-    const { data, error, count } = await query;
-    if (error) throw new Error(error.message);
+    const offset = params?.offset || 0; const limit = Math.min(params?.limit || 100, 1000); query = query.range(offset, offset + limit - 1);
+    const { data, error, count } = await query; if (error) throw new Error(error.message);
     return { products: (data || []).map(mapProduct), total: count || 0 };
   },
-
-  async getProduct(identifier: string): Promise<{ product: Product; related: Product[]; reviews: Review[] }> {
-    let q = supabase.from('products').select('*').eq('is_active', true);
-    q = identifier.includes('-') ? q.or(`id.eq.${identifier},slug.eq.${identifier}`) : q.eq('slug', identifier);
-    const { data, error } = await q.limit(1).maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!data) throw new Error('Product not found.');
-    const product = mapProduct(data);
-    const { data: relatedRows } = await supabase.from('products').select('*').eq('is_active', true).eq('category_id', product.categoryId).neq('id', product.id).limit(6);
-    const { data: reviewRows } = await supabase.from('reviews').select('*').eq('product_id', product.id).order('created_at', { ascending: false });
-    const reviews: Review[] = (reviewRows || []).map((r: any) => ({ id: r.id, productId: r.product_id, customerId: r.customer_id, customerName: r.customer_name, rating: r.rating, comment: r.comment, verifiedPurchase: r.verified_purchase, createdAt: r.created_at }));
-    return { product, related: (relatedRows || []).map(mapProduct), reviews };
-  },
-
-  async getCategories(): Promise<{ categories: Category[] }> {
-    const { data, error } = await supabase.from('categories').select('*').order('name');
-    if (error) throw new Error(error.message);
-    return { categories: (data || []).map(mapCategory) };
-  },
-
-  async submitReview(productId: string, data: { customerName?: string; rating: number; comment: string }): Promise<{ message: string; review: Review }> {
-    const res = await fetch(`${API_BASE}/products/${productId}/reviews`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(data) });
-    return handleResponse(res);
-  },
-
-  async getDeliveryZones(): Promise<{ zones: DeliveryZone[] }> {
-    const { data, error } = await supabase.from('delivery_zones').select('*').eq('active', true).order('name');
-    if (error) throw new Error(error.message);
-    return { zones: (data || []).map((z: any) => ({ id: z.id, name: z.name, fee: Number(z.fee), estimatedTime: z.estimated_time, minimumOrder: Number(z.minimum_order), freeThreshold: z.free_threshold == null ? undefined : Number(z.free_threshold), active: z.active })) };
-  },
-
-  async getSettings(): Promise<{ settings: BusinessSettings }> {
-    const res = await fetch(`${API_BASE}/settings`);
-    return handleResponse(res);
-  },
-
-  async checkout(orderData: { customerName: string; customerPhone: string; customerEmail?: string; deliveryLocation: { county: string; town: string; estate: string; landmark?: string; instructions?: string }; deliveryZoneId: string; paymentMethod: 'CASH_ON_DELIVERY' | 'MPESA_ON_DELIVERY'; items: { productId: string; quantity: number }[] }): Promise<{ message: string; order: Order }> {
-    const res = await fetch(`${API_BASE}/orders/checkout`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(orderData) });
-    return handleResponse(res);
-  },
+  async getProduct(identifier: string): Promise<{ product: Product; related: Product[]; reviews: Review[] }> { let q = supabase.from('products').select('*').eq('is_active', true); q = identifier.includes('-') ? q.or(`id.eq.${identifier},slug.eq.${identifier}`) : q.eq('slug', identifier); const { data, error } = await q.limit(1).maybeSingle(); if (error) throw new Error(error.message); if (!data) throw new Error('Product not found.'); const product = mapProduct(data); const { data: relatedRows } = await supabase.from('products').select('*').eq('is_active', true).eq('category_id', product.categoryId).neq('id', product.id).limit(6); const { data: reviewRows } = await supabase.from('reviews').select('*').eq('product_id', product.id).order('created_at', { ascending: false }); const reviews: Review[] = (reviewRows || []).map((r: any) => ({ id: r.id, productId: r.product_id, customerId: r.customer_id, customerName: r.customer_name, rating: r.rating, comment: r.comment, verifiedPurchase: r.verified_purchase, createdAt: r.created_at })); return { product, related: (relatedRows || []).map(mapProduct), reviews }; },
+  async getCategories(): Promise<{ categories: Category[] }> { const { data, error } = await supabase.from('categories').select('*').order('name'); if (error) throw new Error(error.message); return { categories: (data || []).map(mapCategory) }; },
+  async submitReview(productId: string, data: { customerName?: string; rating: number; comment: string }): Promise<{ message: string; review: Review }> { const res = await fetch(`${API_BASE}/products/${productId}/reviews`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(data) }); return handleResponse(res); },
+  async getDeliveryZones(): Promise<{ zones: DeliveryZone[] }> { const { data, error } = await supabase.from('delivery_zones').select('*').eq('active', true).order('name'); if (error) throw new Error(error.message); return { zones: (data || []).map((z: any) => ({ id: z.id, name: z.name, fee: Number(z.fee), estimatedTime: z.estimated_time, minimumOrder: Number(z.minimum_order), freeThreshold: z.free_threshold == null ? undefined : Number(z.free_threshold), active: z.active })) }; },
+  async getSettings(): Promise<{ settings: BusinessSettings }> { const { data, error } = await supabase.from('business_settings').select('*').limit(1).maybeSingle(); if (error) throw new Error(error.message); return { settings: mapSettings(data || {}) }; },
+  async checkout(orderData: { customerName: string; customerPhone: string; customerEmail?: string; deliveryLocation: { county: string; town: string; estate: string; landmark?: string; instructions?: string }; deliveryZoneId: string; paymentMethod: 'CASH_ON_DELIVERY' | 'MPESA_ON_DELIVERY'; items: { productId: string; quantity: number }[] }): Promise<{ message: string; order: Order }> { const res = await fetch(`${API_BASE}/orders/checkout`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(orderData) }); return handleResponse(res); },
   async trackOrder(query: string): Promise<{ order: Order }> { const res = await fetch(`${API_BASE}/orders/track/${encodeURIComponent(query)}`); return handleResponse(res); },
   async getMyOrders(): Promise<{ orders: Order[] }> { const res = await fetch(`${API_BASE}/orders/my-orders`, { headers: getAuthHeaders() }); return handleResponse(res); },
   async login(credentials: { email: string; password: string; requireRole?: string }): Promise<{ token: string; user: User }> { const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) }); return handleResponse(res); },
