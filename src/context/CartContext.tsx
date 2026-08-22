@@ -19,6 +19,7 @@ interface CartContextType {
   clearCart: () => void;
   setSelectedZone: (zone: DeliveryZone) => void;
   setIsCartDrawerOpen: (open: boolean) => void;
+  setIsCartOpen: (open: boolean) => void;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
@@ -153,7 +154,8 @@ export const CartProvider: React.FC<{ children: React.ReactNode; onNavigateToChe
         removeFromCart,
         clearCart,
         setSelectedZone,
-        setIsCartDrawerOpen
+        setIsCartDrawerOpen,
+        setIsCartOpen: setIsCartDrawerOpen
       }}
     >
       {children}
