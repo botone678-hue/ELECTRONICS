@@ -27,7 +27,12 @@ import { useRealtime } from './hooks/useRealtime';
 
 const AppContent: React.FC = () => {
   // Navigation State
-  const [activeView, setActiveView] = useState<ActiveView>('home');
+  const [activeView, setActiveView] = useState<ActiveView>(() => {
+    if (typeof window !== 'undefined' && window.location.pathname === '/admin') {
+      return 'admin';
+    }
+    return 'home';
+  });
   const [navExtra, setNavExtra] = useState<any>(null);
 
   // Products & Categories Data

@@ -166,15 +166,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
                 <span>Doorstep Inspection</span>
               </li>
               <li className="text-zinc-400">12 - 24 Months Official Warranty</li>
-              <li>
-                <button
-                  onClick={() => onNavigate('admin')}
-                  className="inline-flex items-center gap-1 text-zinc-500 hover:text-red-400 transition mt-2 text-[10px] font-mono"
-                >
-                  <Lock className="w-3 h-3" />
-                  <span>Admin Control Center</span>
-                </button>
-              </li>
+              <li className="text-zinc-400">7-Day Free Replacement Policy</li>
             </ul>
           </div>
         </div>

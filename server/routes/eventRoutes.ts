@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { registerSSEClient } from '../db';
+import { registerEventClient } from '../db';
 
 export const eventRouter = Router();
 
@@ -12,7 +12,7 @@ eventRouter.get('/events', (req, res) => {
   // Send initial connection event
   res.write(`data: ${JSON.stringify({ event: 'connected', timestamp: new Date().toISOString() })}\n\n`);
 
-  const unregister = registerSSEClient((msg) => {
+  const unregister = registerEventClient((msg) => {
     res.write(`data: ${JSON.stringify(msg)}\n\n`);
   });
 

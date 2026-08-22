@@ -105,8 +105,7 @@ productRouter.post('/products/:id/reviews', optionalAuth, (req: AuthRequest, res
       customerId: req.user?.id,
       customerName: customerName ? customerName.trim() : req.user?.name || 'Customer',
       rating: Number(rating),
-      comment: comment.trim(),
-      verifiedPurchase: !!req.user
+      comment: comment.trim()
     });
 
     res.status(201).json({ message: 'Thank you! Review submitted successfully.', review });

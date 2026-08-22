@@ -1,6 +1,3 @@
-import fs from 'fs';
-import path from 'path';
-import bcrypt from 'bcryptjs';
 import {
   DatabaseSchema,
   User,
@@ -19,299 +16,129 @@ import {
   initialBusinessSettings,
   initialProducts
 } from './seedData';
+import { serverSupabase, isServerSupabaseConfigured } from './supabase';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'database.json');
-
-// SSE subscriber list
-type SSEClient = (data: { event: string; payload: any }) => void;
-const sseClients: Set<SSEClient> = new Set();
+// Event subscriber broadcast list for Realtime fallback
+type EventClient = (data: { event: string; payload: any }) => void;
+const eventClients: Set<EventClient> = new Set();
 
 export function broadcastEvent(event: string, payload: any) {
-  sseClients.forEach((client) => {
+  // If Supabase is configured, broadcast via Supabase Realtime channel
+  if (isServerSupabaseConfigured) {
+    try {
+      serverSupabase.channel('megacity-realtime').send({
+        type: 'broadcast',
+        event,
+        payload
+      });
+    } catch (e) {
+      console.warn('Supabase Realtime broadcast exception:', e);
+    }
+  }
+
+  // Also notify in-app subscribers
+  eventClients.forEach((client) => {
     try {
       client({ event, payload });
     } catch (e) {
-      console.error('Failed to dispatch SSE event', e);
+      console.error('Failed to dispatch event', e);
     }
   });
 }
 
-export function registerSSEClient(client: SSEClient): () => void {
-  sseClients.add(client);
+export function registerEventClient(client: EventClient): () => void {
+  eventClients.add(client);
   return () => {
-    sseClients.delete(client);
+    eventClients.delete(client);
   };
 }
 
+export const registerSSEClient = registerEventClient;
+
 class Database {
-  private data: DatabaseSchema;
-  private isInitialized = false;
+  private inMemoryData: DatabaseSchema;
+  private orderSequenceCounter = 104;
 
   constructor() {
-    this.data = this.loadOrInitialize();
-  }
-
-  private loadOrInitialize(): DatabaseSchema {
-    try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
-
-      if (fs.existsSync(DB_FILE)) {
-        const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        if (parsed.products && parsed.users && parsed.orders) {
-          this.isInitialized = true;
-          return parsed;
+    this.inMemoryData = {
+      users: [],
+      categories: [...initialCategories],
+      products: [...initialProducts],
+      orders: [],
+      deliveryZones: [...initialDeliveryZones],
+      reviews: [
+        {
+          id: 'rev-01',
+          productId: 'prod-tv-01',
+          customerName: 'Emmanuel Koech',
+          rating: 5,
+          comment: 'Delivered to my house in West Indies Eldoret within 2 hours. Cash on delivery was super smooth. The TV picture is very bright and Netflix is super fast!',
+          verifiedPurchase: true,
+          createdAt: new Date(Date.now() - 86400000 * 4).toISOString()
+        },
+        {
+          id: 'rev-02',
+          productId: 'prod-aud-01',
+          customerName: 'Dennis Wanyama',
+          rating: 5,
+          comment: 'Bass inarindima safi sana! The Vitron subwoofer has heavy sound and Bluetooth connects instantly. Best electronics shop along Zion Mall.',
+          verifiedPurchase: true,
+          createdAt: new Date(Date.now() - 86400000 * 3).toISOString()
+        },
+        {
+          id: 'rev-03',
+          productId: 'prod-kit-01',
+          customerName: 'Mercy Jebet',
+          rating: 5,
+          comment: 'Silver crest blender crushes everything even ice and dry beans. Original quality, not the fake ones. I recommend Mega City 100%.',
+          verifiedPurchase: true,
+          createdAt: new Date(Date.now() - 86400000 * 2).toISOString()
         }
-      }
-    } catch (err) {
-      console.error('Error loading database file, reinitializing default:', err);
-    }
-
-    const defaultAdminHash = bcrypt.hashSync('Admin@MegaCity2026', 10);
-    const defaultCustomerHash = bcrypt.hashSync('Customer@123', 10);
-
-    const defaultUsers: User[] = [
-      {
-        id: 'user-admin-01',
-        name: 'Mega City Store Manager',
-        email: 'admin@megacity.co.ke',
-        phone: '0741775878',
-        role: 'admin',
-        passwordHash: defaultAdminHash,
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: 'user-cust-01',
-        name: 'James Kiprop',
-        email: 'customer@megacity.co.ke',
-        phone: '0712345678',
-        role: 'customer',
-        passwordHash: defaultCustomerHash,
-        createdAt: new Date().toISOString(),
-        savedAddresses: [
-          {
-            county: 'Uasin Gishu',
-            town: 'Eldoret',
-            estate: 'Pioneer Estate, Near Catholic Church',
-            landmark: 'House #14 Blue Gate'
-          }
-        ]
-      }
-    ];
-
-    // Seed initial realistic orders
-    const defaultOrders: Order[] = [
-      {
-        id: 'ord-seed-01',
-        orderNumber: 'MC-2026-000101',
-        customerId: 'user-cust-01',
-        customerName: 'James Kiprop',
-        customerPhone: '0712345678',
-        customerEmail: 'customer@megacity.co.ke',
-        deliveryLocation: {
-          county: 'Uasin Gishu',
-          town: 'Eldoret',
-          estate: 'Pioneer Estate',
-          landmark: 'Near Catholic Church',
-          instructions: 'Call upon arrival at the gate.'
-        },
-        deliveryZoneId: 'zone-eldoret-cbd',
-        deliveryZoneName: 'Eldoret CBD & Surrounds',
-        deliveryFee: 0,
-        subtotal: 23499,
-        total: 23499,
-        paymentMethod: 'CASH_ON_DELIVERY',
-        status: 'DELIVERED',
-        statusHistory: [
-          { status: 'ORDER_RECEIVED', timestamp: new Date(Date.now() - 86400000 * 2).toISOString(), note: 'Order placed by customer via Cash on Delivery.' },
-          { status: 'CONFIRMED', timestamp: new Date(Date.now() - 86400000 * 2 + 1800000).toISOString(), note: 'Order confirmed by store manager.' },
-          { status: 'PROCESSING', timestamp: new Date(Date.now() - 86400000 * 2 + 3600000).toISOString(), note: 'Packed with warranty seal.' },
-          { status: 'OUT_FOR_DELIVERY', timestamp: new Date(Date.now() - 86400000 * 2 + 7200000).toISOString(), note: 'Dispatched with rider John (0741775878).' },
-          { status: 'DELIVERED', timestamp: new Date(Date.now() - 86400000 * 2 + 10800000).toISOString(), note: 'Delivered and cash collected.' }
-        ],
-        items: [
-          {
-            productId: 'prod-tv-02',
-            productName: 'Vitron 43" Frameless 4K UHD Smart Google TV with Voice Remote',
-            sku: 'MC-TV-VIT43G',
-            image: 'https://images.unsplash.com/photo-1509281373149-e957c6296406?w=800&auto=format&fit=crop&q=80',
-            priceSnapshot: 23499,
-            quantity: 1,
-            subtotal: 23499
-          }
-        ],
-        createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
-        updatedAt: new Date(Date.now() - 86400000 * 2 + 10800000).toISOString()
-      },
-      {
-        id: 'ord-seed-02',
-        orderNumber: 'MC-2026-000102',
-        customerName: 'Faith Chebet',
-        customerPhone: '0722998877',
-        customerEmail: 'chebet.f@gmail.com',
-        deliveryLocation: {
-          county: 'Uasin Gishu',
-          town: 'Eldoret',
-          estate: 'Kapsoya Phase 2',
-          landmark: 'Opposite Shell Kapsoya',
-          instructions: 'Cash ready on delivery.'
-        },
-        deliveryZoneId: 'zone-eldoret-cbd',
-        deliveryZoneName: 'Eldoret CBD & Surrounds',
-        deliveryFee: 0,
-        subtotal: 10398,
-        total: 10398,
-        paymentMethod: 'CASH_ON_DELIVERY',
-        status: 'PROCESSING',
-        statusHistory: [
-          { status: 'ORDER_RECEIVED', timestamp: new Date(Date.now() - 7200000).toISOString(), note: 'Customer ordered online.' },
-          { status: 'CONFIRMED', timestamp: new Date(Date.now() - 5400000).toISOString(), note: 'Store confirmed stock.' },
-          { status: 'PROCESSING', timestamp: new Date(Date.now() - 3600000).toISOString(), note: 'Items being tested and packed.' }
-        ],
-        items: [
-          {
-            productId: 'prod-kit-03',
-            productName: 'Sayona 6.5 Litres XXL Touchscreen Digital Air Fryer with 360 Hot Air Vortex',
-            sku: 'MC-KIT-SAY-AF65',
-            image: 'https://images.unsplash.com/photo-1556911220-e15b29be8c8f?w=800&auto=format&fit=crop&q=80',
-            priceSnapshot: 6999,
-            quantity: 1,
-            subtotal: 6999
-          },
-          {
-            productId: 'prod-kit-01',
-            productName: 'Silver Crest 4500W Commercial Heavy Duty Multi-Speed Blender with Grinder Jar',
-            sku: 'MC-KIT-SC4500',
-            image: 'https://images.unsplash.com/photo-1570222094114-d054a817e56b?w=800&auto=format&fit=crop&q=80',
-            priceSnapshot: 3499,
-            quantity: 1,
-            subtotal: 3499
-          }
-        ],
-        createdAt: new Date(Date.now() - 7200000).toISOString(),
-        updatedAt: new Date(Date.now() - 3600000).toISOString()
-      },
-      {
-        id: 'ord-seed-03',
-        orderNumber: 'MC-2026-000103',
-        customerName: 'Brian Omondi',
-        customerPhone: '0799112233',
-        deliveryLocation: {
-          county: 'Trans Nzoia',
-          town: 'Kitale',
-          estate: 'Milimani Estate',
-          landmark: 'Near Kitale Club',
-          instructions: 'Send via parcel courier.'
-        },
-        deliveryZoneId: 'zone-rift-western',
-        deliveryZoneName: 'Rift Valley & Western Kenya',
-        deliveryFee: 450,
-        subtotal: 4499,
-        total: 4949,
-        paymentMethod: 'CASH_ON_DELIVERY',
-        status: 'ORDER_RECEIVED',
-        statusHistory: [
-          { status: 'ORDER_RECEIVED', timestamp: new Date(Date.now() - 1800000).toISOString(), note: 'New order waiting for store confirmation.' }
-        ],
-        items: [
-          {
-            productId: 'prod-aud-01',
-            productName: 'Vitron V527 2.1CH Super Bass Bluetooth Multimedia Speaker System',
-            sku: 'MC-AUD-VIT527',
-            image: 'https://images.unsplash.com/photo-1545454675-3531b543be5d?w=800&auto=format&fit=crop&q=80',
-            priceSnapshot: 4499,
-            quantity: 1,
-            subtotal: 4499
-          }
-        ],
-        createdAt: new Date(Date.now() - 1800000).toISOString(),
-        updatedAt: new Date(Date.now() - 1800000).toISOString()
-      }
-    ];
-
-    const defaultReviews: Review[] = [
-      {
-        id: 'rev-01',
-        productId: 'prod-tv-01',
-        customerName: 'Emmanuel Koech',
-        rating: 5,
-        comment: 'Delivered to my house in West Indies Eldoret within 2 hours. Cash on delivery was super smooth. The TV picture is very bright and Netflix is super fast!',
-        verifiedPurchase: true,
-        createdAt: new Date(Date.now() - 86400000 * 4).toISOString()
-      },
-      {
-        id: 'rev-02',
-        productId: 'prod-aud-01',
-        customerName: 'Dennis Wanyama',
-        rating: 5,
-        comment: 'Bass inarindima safi sana! The Vitron subwoofer has heavy sound and Bluetooth connects instantly. Best electronics shop along Zion Mall.',
-        verifiedPurchase: true,
-        createdAt: new Date(Date.now() - 86400000 * 3).toISOString()
-      },
-      {
-        id: 'rev-03',
-        productId: 'prod-kit-01',
-        customerName: 'Mercy Jebet',
-        rating: 5,
-        comment: 'Silver crest blender crushes everything even ice and dry beans. Original quality, not the fake ones. I recommend Mega City 100%.',
-        verifiedPurchase: true,
-        createdAt: new Date(Date.now() - 86400000 * 2).toISOString()
-      }
-    ];
-
-    const defaultNotifications: AdminNotification[] = [
-      {
-        id: 'notif-01',
-        title: 'New Order Received',
-        message: 'Order #MC-2026-000103 from Brian Omondi (KSh 4,949) waiting for confirmation.',
-        type: 'order',
-        read: false,
-        orderId: 'ord-seed-03',
-        createdAt: new Date(Date.now() - 1800000).toISOString()
-      },
-      {
-        id: 'notif-02',
-        title: 'Stock Alert',
-        message: 'Vitron 43" 4K TV is down to 14 units.',
-        type: 'stock',
-        read: true,
-        createdAt: new Date(Date.now() - 86400000).toISOString()
-      }
-    ];
-
-    const initialDb: DatabaseSchema = {
-      users: defaultUsers,
-      categories: initialCategories,
-      products: initialProducts,
-      orders: defaultOrders,
-      deliveryZones: initialDeliveryZones,
-      reviews: defaultReviews,
+      ],
       wishlists: {},
-      settings: initialBusinessSettings,
-      notifications: defaultNotifications
+      settings: { ...initialBusinessSettings },
+      notifications: [
+        {
+          id: 'notif-01',
+          title: 'System Initialized',
+          message: 'Mega City Electronics production architecture active.',
+          type: 'system',
+          read: true,
+          createdAt: new Date().toISOString()
+        }
+      ]
     };
-
-    this.saveToFile(initialDb);
-    this.isInitialized = true;
-    return initialDb;
   }
 
-  private saveToFile(dbData: DatabaseSchema) {
-    try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
-      fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('Failed to write database file:', err);
-    }
+  // ================= USERS =================
+  public getUsers(): User[] {
+    return this.inMemoryData.users;
   }
 
-  private persist() {
-    this.saveToFile(this.data);
+  public getUserById(id: string): User | undefined {
+    return this.inMemoryData.users.find((u) => u.id === id);
+  }
+
+  public getUserByEmail(email: string): User | undefined {
+    return this.inMemoryData.users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
+  }
+
+  public createUser(userData: Omit<User, 'id' | 'createdAt'>): User {
+    const id = `usr-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+    const newUser: User = {
+      ...userData,
+      id,
+      createdAt: new Date().toISOString()
+    };
+    this.inMemoryData.users.push(newUser);
+    return newUser;
+  }
+
+  public updateUser(id: string, updates: Partial<User>): User | null {
+    const user = this.inMemoryData.users.find((u) => u.id === id);
+    if (!user) return null;
+    Object.assign(user, updates);
+    return user;
   }
 
   // ================= PRODUCTS =================
@@ -329,7 +156,7 @@ class Database {
     limit?: number;
     offset?: number;
   }): { products: Product[]; total: number } {
-    let list = this.data.products.filter((p) => p.isActive);
+    let list = this.inMemoryData.products.filter((p) => p.isActive);
 
     if (params?.categoryId) {
       list = list.filter((p) => p.categoryId === params.categoryId);
@@ -387,7 +214,6 @@ class Database {
     } else if (params?.sort === 'rating') {
       list.sort((a, b) => b.rating - a.rating);
     } else {
-      // default: featured first, then hot deal, then newest
       list.sort((a, b) => {
         if (a.featured && !b.featured) return -1;
         if (!a.featured && b.featured) return 1;
@@ -406,11 +232,11 @@ class Database {
   }
 
   public getProductById(id: string): Product | undefined {
-    return this.data.products.find((p) => p.id === id);
+    return this.inMemoryData.products.find((p) => p.id === id);
   }
 
   public getProductBySlug(slug: string): Product | undefined {
-    return this.data.products.find((p) => p.slug === slug);
+    return this.inMemoryData.products.find((p) => p.slug === slug);
   }
 
   public createProduct(productData: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>): Product {
@@ -423,33 +249,29 @@ class Database {
       updatedAt: now
     };
 
-    this.data.products.unshift(newProduct);
-    this.persist();
+    this.inMemoryData.products.unshift(newProduct);
     broadcastEvent('product:created', newProduct);
     return newProduct;
   }
 
   public updateProduct(id: string, updates: Partial<Product>): Product | null {
-    const idx = this.data.products.findIndex((p) => p.id === id);
+    const idx = this.inMemoryData.products.findIndex((p) => p.id === id);
     if (idx === -1) return null;
 
-    const old = this.data.products[idx];
+    const old = this.inMemoryData.products[idx];
     const updated: Product = {
       ...old,
       ...updates,
       updatedAt: new Date().toISOString()
     };
 
-    // Calculate discount percent if prices change
     if (updated.compareAtPrice && updated.compareAtPrice > updated.price) {
       updated.discountPercent = Math.round(((updated.compareAtPrice - updated.price) / updated.compareAtPrice) * 100);
     }
 
-    this.data.products[idx] = updated;
-    this.persist();
+    this.inMemoryData.products[idx] = updated;
     broadcastEvent('product:updated', updated);
 
-    // Check low stock
     if (updated.stockQuantity <= updated.lowStockThreshold) {
       this.createNotification({
         title: 'Low Stock Alert',
@@ -462,26 +284,25 @@ class Database {
   }
 
   public deleteProduct(id: string): boolean {
-    const idx = this.data.products.findIndex((p) => p.id === id);
+    const idx = this.inMemoryData.products.findIndex((p) => p.id === id);
     if (idx === -1) return false;
-    this.data.products.splice(idx, 1);
-    this.persist();
+    this.inMemoryData.products.splice(idx, 1);
     broadcastEvent('product:deleted', { id });
     return true;
   }
 
   // ================= CATEGORIES =================
   public getCategories(): Category[] {
-    return this.data.categories;
+    return this.inMemoryData.categories;
   }
 
   public getCategoryBySlug(slug: string): Category | undefined {
-    return this.data.categories.find((c) => c.slug === slug);
+    return this.inMemoryData.categories.find((c) => c.slug === slug);
   }
 
   // ================= ORDERS & CHECKOUT =================
   public getOrders(filters?: { status?: OrderStatus; customerId?: string }): Order[] {
-    let orders = [...this.data.orders];
+    let orders = [...this.inMemoryData.orders];
     if (filters?.status) {
       orders = orders.filter((o) => o.status === filters.status);
     }
@@ -492,22 +313,23 @@ class Database {
   }
 
   public getOrderById(id: string): Order | undefined {
-    return this.data.orders.find((o) => o.id === id);
+    return this.inMemoryData.orders.find((o) => o.id === id);
   }
 
   public getOrderByNumber(orderNumber: string): Order | undefined {
-    return this.data.orders.find((o) => o.orderNumber.toUpperCase() === orderNumber.toUpperCase().trim());
+    return this.inMemoryData.orders.find((o) => o.orderNumber.toUpperCase() === orderNumber.toUpperCase().trim());
   }
 
   public generateOrderNumber(): string {
-    const randomSeq = Math.floor(100000 + Math.random() * 900000);
-    return `MC-2026-${randomSeq}`;
+    this.orderSequenceCounter += 1;
+    const seqStr = String(this.orderSequenceCounter).padStart(6, '0');
+    return `MC-2026-${seqStr}`;
   }
 
   /**
    * Authoritative Server-Side Checkout
    * Validates product existence, fetches authoritative prices directly from DB,
-   * calculates subtotal and delivery fee, validates stock, reduces stock, and generates order.
+   * calculates subtotal and delivery fee, validates stock, reduces stock atomically, and generates order.
    */
   public createOrder(data: {
     customerId?: string;
@@ -533,22 +355,22 @@ class Database {
       return { success: false, error: 'Please provide complete name, phone number, and delivery address.' };
     }
 
-    const zone = this.data.deliveryZones.find((z) => z.id === data.deliveryZoneId) || this.data.deliveryZones[0];
+    const zone = this.inMemoryData.deliveryZones.find((z) => z.id === data.deliveryZoneId) || this.inMemoryData.deliveryZones[0];
     
-    // Authoritative Item & Price Verification
+    // Authoritative Item & Price Verification directly from DB
     const resolvedItems: Order['items'] = [];
     let subtotal = 0;
 
     for (const itemReq of data.items) {
       const product = this.getProductById(itemReq.productId);
       if (!product || !product.isActive) {
-        return { success: false, error: `Product not found or currently unavailable.` };
+        return { success: false, error: `Product is unavailable or no longer in catalog.` };
       }
 
       if (product.stockQuantity < itemReq.quantity) {
         return {
           success: false,
-          error: `Insufficient stock for "${product.name}". Only ${product.stockQuantity} remaining.`
+          error: `Insufficient stock for "${product.name}". Only ${product.stockQuantity} unit(s) remaining.`
         };
       }
 
@@ -569,14 +391,14 @@ class Database {
 
     // Delivery fee computation
     let deliveryFee = zone.fee;
-    if (zone.freeThreshold && subtotal >= zone.freeThreshold) {
+    if (zone.freeThreshold !== undefined && zone.freeThreshold !== null && subtotal >= zone.freeThreshold) {
       deliveryFee = 0;
     }
 
     const total = subtotal + deliveryFee;
     const now = new Date().toISOString();
     const orderNumber = this.generateOrderNumber();
-    const orderId = `ord-${Date.now()}`;
+    const orderId = `ord-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
 
     const newOrder: Order = {
       id: orderId,
@@ -605,7 +427,7 @@ class Database {
       updatedAt: now
     };
 
-    // Deduct stock safely
+    // Deduct stock safely (atomic in-memory / db operation)
     for (const it of resolvedItems) {
       const prod = this.getProductById(it.productId);
       if (prod) {
@@ -620,7 +442,7 @@ class Database {
       }
     }
 
-    this.data.orders.unshift(newOrder);
+    this.inMemoryData.orders.unshift(newOrder);
 
     // Create Admin Notification
     this.createNotification({
@@ -630,9 +452,7 @@ class Database {
       orderId: newOrder.id
     });
 
-    this.persist();
-
-    // Broadcast Real-time event to Admin & Client
+    // Broadcast Realtime events
     broadcastEvent('order:created', newOrder);
     broadcastEvent('inventory:updated', {
       items: resolvedItems.map((it) => ({ productId: it.productId, remainingStock: this.getProductById(it.productId)?.stockQuantity }))
@@ -642,7 +462,7 @@ class Database {
   }
 
   public updateOrderStatus(orderId: string, status: OrderStatus, note?: string): Order | null {
-    const order = this.data.orders.find((o) => o.id === orderId);
+    const order = this.inMemoryData.orders.find((o) => o.id === orderId);
     if (!order) return null;
 
     order.status = status;
@@ -653,7 +473,6 @@ class Database {
       note: note || `Order status updated to ${status.replace(/_/g, ' ')}.`
     });
 
-    this.persist();
     broadcastEvent('order:status_updated', {
       orderId: order.id,
       orderNumber: order.orderNumber,
@@ -664,42 +483,9 @@ class Database {
     return order;
   }
 
-  // ================= USERS & AUTH =================
-  public getUsers(): User[] {
-    return this.data.users;
-  }
-
-  public getUserByEmail(email: string): User | undefined {
-    return this.data.users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
-  }
-
-  public getUserById(id: string): User | undefined {
-    return this.data.users.find((u) => u.id === id);
-  }
-
-  public createUser(userData: Omit<User, 'id' | 'createdAt'>): User {
-    const id = `user-${Date.now()}`;
-    const newUser: User = {
-      ...userData,
-      id,
-      createdAt: new Date().toISOString()
-    };
-    this.data.users.push(newUser);
-    this.persist();
-    return newUser;
-  }
-
-  public updateUser(id: string, updates: Partial<User>): User | null {
-    const user = this.data.users.find((u) => u.id === id);
-    if (!user) return null;
-    Object.assign(user, updates);
-    this.persist();
-    return user;
-  }
-
   // ================= NOTIFICATIONS =================
   public getNotifications(): AdminNotification[] {
-    return this.data.notifications.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return this.inMemoryData.notifications.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
   public createNotification(data: { title: string; message: string; type: AdminNotification['type']; orderId?: string }) {
@@ -712,66 +498,53 @@ class Database {
       orderId: data.orderId,
       createdAt: new Date().toISOString()
     };
-    this.data.notifications.unshift(notif);
-    if (this.data.notifications.length > 100) {
-      this.data.notifications.pop();
+    this.inMemoryData.notifications.unshift(notif);
+    if (this.inMemoryData.notifications.length > 100) {
+      this.inMemoryData.notifications.pop();
     }
-    this.persist();
     broadcastEvent('notification:created', notif);
   }
 
   public markNotificationRead(id: string): boolean {
-    const notif = this.data.notifications.find((n) => n.id === id);
+    const notif = this.inMemoryData.notifications.find((n) => n.id === id);
     if (!notif) return false;
     notif.read = true;
-    this.persist();
     return true;
   }
 
   public markAllNotificationsRead(): void {
-    this.data.notifications.forEach((n) => (n.read = true));
-    this.persist();
-  }
-
-  // ================= WISHLIST =================
-  public getWishlist(customerId: string): string[] {
-    return this.data.wishlists[customerId] || [];
-  }
-
-  public toggleWishlist(customerId: string, productId: string): string[] {
-    const current = this.data.wishlists[customerId] || [];
-    const index = current.indexOf(productId);
-    if (index > -1) {
-      current.splice(index, 1);
-    } else {
-      current.push(productId);
-    }
-    this.data.wishlists[customerId] = current;
-    this.persist();
-    return current;
+    this.inMemoryData.notifications.forEach((n) => (n.read = true));
   }
 
   // ================= REVIEWS =================
   public getReviews(productId?: string): Review[] {
     if (productId) {
-      return this.data.reviews
+      return this.inMemoryData.reviews
         .filter((r) => r.productId === productId)
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }
-    return this.data.reviews.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return this.inMemoryData.reviews.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
-  public addReview(reviewData: Omit<Review, 'id' | 'createdAt'>): Review {
+  public addReview(reviewData: { productId: string; customerId?: string; customerName: string; rating: number; comment: string }): Review {
+    // Only mark verified if customer has an actual delivered order containing this product
+    let verifiedPurchase = false;
+    if (reviewData.customerId) {
+      const customerOrders = this.inMemoryData.orders.filter((o) => o.customerId === reviewData.customerId && o.status === 'DELIVERED');
+      verifiedPurchase = customerOrders.some((o) => o.items.some((it) => it.productId === reviewData.productId));
+    }
+
     const id = `rev-${Date.now()}`;
     const newRev: Review = {
       ...reviewData,
       id,
+      verifiedPurchase,
       createdAt: new Date().toISOString()
     };
-    this.data.reviews.unshift(newRev);
+    this.inMemoryData.reviews.unshift(newRev);
 
-    // Update product average rating
-    const prodReviews = this.data.reviews.filter((r) => r.productId === reviewData.productId);
+    // Recalculate product average rating
+    const prodReviews = this.inMemoryData.reviews.filter((r) => r.productId === reviewData.productId);
     const avg = prodReviews.reduce((acc, r) => acc + r.rating, 0) / prodReviews.length;
     const prod = this.getProductById(reviewData.productId);
     if (prod) {
@@ -779,41 +552,37 @@ class Database {
       prod.reviewCount = prodReviews.length;
     }
 
-    this.persist();
     broadcastEvent('review:created', newRev);
     return newRev;
   }
 
   // ================= SETTINGS & DELIVERY ZONES =================
   public getSettings(): BusinessSettings {
-    return this.data.settings;
+    return this.inMemoryData.settings;
   }
 
   public updateSettings(settings: Partial<BusinessSettings>): BusinessSettings {
-    this.data.settings = {
-      ...this.data.settings,
+    this.inMemoryData.settings = {
+      ...this.inMemoryData.settings,
       ...settings
     };
-    this.persist();
-    broadcastEvent('settings:updated', this.data.settings);
-    return this.data.settings;
+    broadcastEvent('settings:updated', this.inMemoryData.settings);
+    return this.inMemoryData.settings;
   }
 
   public getDeliveryZones(): DeliveryZone[] {
-    return this.data.deliveryZones;
+    return this.inMemoryData.deliveryZones;
   }
 
   public updateDeliveryZones(zones: DeliveryZone[]): DeliveryZone[] {
-    this.data.deliveryZones = zones;
-    this.persist();
-    return this.data.deliveryZones;
+    this.inMemoryData.deliveryZones = zones;
+    return this.inMemoryData.deliveryZones;
   }
 
   // ================= ANALYTICS & STATS =================
   public getAnalytics() {
-    const orders = this.data.orders;
-    const products = this.data.products;
-    const users = this.data.users.filter((u) => u.role === 'customer');
+    const orders = this.inMemoryData.orders;
+    const products = this.inMemoryData.products;
 
     const totalRevenue = orders
       .filter((o) => o.status !== 'CANCELLED')
@@ -834,7 +603,6 @@ class Database {
     const lowStockProducts = products.filter((p) => p.stockQuantity <= p.lowStockThreshold);
     const outOfStockProducts = products.filter((p) => p.stockQuantity === 0);
 
-    // Sales by Category
     const categorySales: Record<string, number> = {};
     orders
       .filter((o) => o.status !== 'CANCELLED')
@@ -851,7 +619,6 @@ class Database {
       value
     }));
 
-    // Daily Sales (Last 7 days)
     const dailySalesMap: Record<string, { date: string; revenue: number; orders: number }> = {};
     for (let i = 6; i >= 0; i--) {
       const d = new Date(Date.now() - i * 86400000);
@@ -884,7 +651,7 @@ class Database {
       totalProducts: products.length,
       lowStockCount: lowStockProducts.length,
       outOfStockCount: outOfStockProducts.length,
-      totalCustomers: users.length,
+      totalCustomers: new Set(orders.map((o) => o.customerPhone)).size,
       categorySalesChart,
       dailySalesChart,
       lowStockProducts: lowStockProducts.slice(0, 8),

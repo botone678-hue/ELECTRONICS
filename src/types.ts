@@ -141,7 +141,7 @@ export interface AdminNotification {
   id: string;
   title: string;
   message: string;
-  type: 'order' | 'stock' | 'customer' | 'review';
+  type: 'order' | 'stock' | 'customer' | 'review' | 'system';
   read: boolean;
   orderId?: string;
   createdAt: string;

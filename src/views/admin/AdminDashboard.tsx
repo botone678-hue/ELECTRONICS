@@ -52,8 +52,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ categories, onEx
   const { settings, refreshSettings } = useSettings();
 
   // Admin login form states (if not logged in as admin)
-  const [adminEmail, setAdminEmail] = useState('admin@megacity.co.ke');
-  const [adminPassword, setAdminPassword] = useState('Admin@MegaCity2026');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
@@ -233,6 +233,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ categories, onEx
                 required
                 value={adminEmail}
                 onChange={(e) => setAdminEmail(e.target.value)}
+                placeholder="admin@megacity.co.ke"
                 className="w-full bg-zinc-950 border border-zinc-800 rounded p-2 text-xs text-zinc-100 outline-none focus:border-red-500 font-mono"
               />
             </div>
@@ -244,6 +245,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ categories, onEx
                 required
                 value={adminPassword}
                 onChange={(e) => setAdminPassword(e.target.value)}
+                placeholder="••••••••"
                 className="w-full bg-zinc-950 border border-zinc-800 rounded p-2 text-xs text-zinc-100 outline-none focus:border-red-500 font-mono"
               />
             </div>
