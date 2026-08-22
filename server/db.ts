@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import {
   DatabaseSchema,
   User,
@@ -61,7 +62,18 @@ class Database {
 
   constructor() {
     this.inMemoryData = {
-      users: [],
+      users: [
+        {
+          id: 'usr-admin-01',
+          name: 'Store Manager',
+          email: 'admin@megacity.co.ke',
+          phone: '0741775878',
+          role: 'admin',
+          passwordHash: bcrypt.hashSync('Admin@MegaCity2026!', 10),
+          savedAddresses: [],
+          createdAt: new Date().toISOString()
+        }
+      ],
       categories: [...initialCategories],
       products: [...initialProducts],
       orders: [],

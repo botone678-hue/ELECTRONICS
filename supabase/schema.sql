@@ -75,6 +75,20 @@ create index if not exists idx_products_featured on public.products(featured);
 create index if not exists idx_products_hot_deal on public.products(hot_deal);
 
 -- ----------------------------------------------------------
+-- 3b. PRODUCT IMAGES TABLE (Relational image normalization)
+-- ----------------------------------------------------------
+create table if not exists public.product_images (
+  id uuid primary key default gen_random_uuid(),
+  product_id text not null references public.products(id) on delete cascade,
+  image_url text not null,
+  display_order int not null default 0,
+  is_primary boolean not null default false,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_product_images_product on public.product_images(product_id);
+
+-- ----------------------------------------------------------
 -- 4. DELIVERY ZONES TABLE
 -- ----------------------------------------------------------
 create table if not exists public.delivery_zones (
@@ -180,7 +194,7 @@ create table if not exists public.notifications (
   id text primary key,
   title text not null,
   message text not null,
-  type text not null default 'order' check (type in ('order', 'stock', 'system')),
+  type text not null default 'order' check (type in ('order', 'stock', 'customer', 'review', 'system')),
   read boolean not null default false,
   order_id text,
   created_at timestamptz default now()
@@ -251,6 +265,7 @@ $$ language plpgsql;
 alter table public.profiles enable row level security;
 alter table public.categories enable row level security;
 alter table public.products enable row level security;
+alter table public.product_images enable row level security;
 alter table public.delivery_zones enable row level security;
 alter table public.orders enable row level security;
 alter table public.order_items enable row level security;
@@ -295,6 +310,15 @@ create policy "Active products are publicly readable"
 
 create policy "Admins can manage products"
   on public.products for all
+  using (public.is_admin());
+
+-- Product Images Policies
+create policy "Product images are publicly readable"
+  on public.product_images for select
+  using (true);
+
+create policy "Admins can manage product images"
+  on public.product_images for all
   using (public.is_admin());
 
 -- Delivery Zones Policies
@@ -373,3 +397,48 @@ alter publication supabase_realtime add table public.orders;
 alter publication supabase_realtime add table public.products;
 alter publication supabase_realtime add table public.notifications;
 alter publication supabase_realtime add table public.business_settings;
+
+-- ----------------------------------------------------------
+-- INITIAL SEED DATA
+-- ----------------------------------------------------------
+
+-- Business Settings
+insert into public.business_settings (id, store_name, tagline, phone, whatsapp, email, location, business_hours, announcement, delivery_promise, free_delivery_banner, is_accepting_orders)
+values (
+  'default',
+  'MEGA CITY ELECTRONICS',
+  'Premier Kenyan Electronics & Electrical Store',
+  '0741775878',
+  '0741775878',
+  'info@megacity.co.ke',
+  'Along Zion Mall, Kenya',
+  'Monday - Saturday: 8:00 AM - 7:30 PM | Sunday: 10:00 AM - 4:00 PM',
+  '🚚 Free Same-Day Delivery in Eldoret CBD & Surrounds for all orders! Cash on Delivery Available.',
+  'Fast doorstep dispatch across Kenya with product inspection before payment.',
+  'Free Same-Day Delivery available for Eldoret CBD & orders above KSh 15,000 across Uasin Gishu!',
+  true
+)
+on conflict (id) do nothing;
+
+-- Categories
+insert into public.categories (id, name, slug, description, icon, image_url, subcategories)
+values
+  ('cat-tvs', 'TV & Entertainment', 'tv-entertainment', 'Smart TVs, 4K UHD, QLED, Android TVs, wall brackets, TV guards and streaming accessories', 'Tv', 'https://images.unsplash.com/photo-1593359677879-a4bb92f829d1?w=800&auto=format&fit=crop&q=80', array['Smart TVs', '4K UHD TVs', 'QLED TVs', 'Android TVs', 'TV Wall Mounts', 'TV Guards & Protectors', 'TV Boxes & Remotes']),
+  ('cat-audio', 'Audio & Home Theatres', 'audio-home-theatres', 'Home theatres, soundbars, heavy bass woofers, Bluetooth party speakers, amplifiers and mics', 'Speaker', 'https://images.unsplash.com/photo-1545454675-3531b543be5d?w=800&auto=format&fit=crop&q=80', array['Home Theatres', 'Soundbars', 'Woofer Systems', 'Bluetooth Speakers', 'Party Speakers', 'Amplifiers & Microphones']),
+  ('cat-refrigeration', 'Refrigeration & Freezers', 'refrigeration-freezers', 'Single door, double door, side-by-side refrigerators, mini fridges and deep chest freezers', 'Refrigerator', 'https://images.unsplash.com/photo-1571175443880-49e1d25b2bc5?w=800&auto=format&fit=crop&q=80', array['Double Door Fridges', 'Single Door Fridges', 'Side-by-Side Fridges', 'Mini Fridges', 'Chest Freezers', 'Upright Freezers']),
+  ('cat-kitchen', 'Kitchen Appliances', 'kitchen-appliances', 'Microwaves, electric kettles, high-power blenders, air fryers, rice cookers and cookers', 'Utensils', 'https://images.unsplash.com/photo-1556911220-e15b29be8c8f?w=800&auto=format&fit=crop&q=80', array['Microwaves', 'Blenders & Juicers', 'Air Fryers', 'Electric Kettles', 'Cookers & Hotplates', 'Toasters & Sandwich Makers']),
+  ('cat-home-appliances', 'Home Appliances', 'home-appliances', 'Automatic washing machines, water dispensers, room heaters, dry/steam irons and cooling fans', 'Zap', 'https://images.unsplash.com/photo-1626806787461-102c1bfaaea1?w=800&auto=format&fit=crop&q=80', array['Washing Machines', 'Water Dispensers', 'Heaters & Fans', 'Steam & Dry Irons', 'Vacuum Cleaners']),
+  ('cat-electrical', 'Electrical Accessories', 'electrical-accessories', 'Switches, sockets, heavy duty extension boards, MCBs, distribution boxes, conduits and cables', 'Cpu', 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=800&auto=format&fit=crop&q=80', array['Switches & Sockets', 'Extension Boards', 'Surge & Voltage Guards', 'Circuit Breakers & MCBs', 'Cables & Conduits', 'Adapters & Plugs']),
+  ('cat-power-solar', 'Power & Solar Energy', 'power-solar-energy', 'Solar flood lights, inverters, deep cycle solar batteries, UPS backup systems and voltage stabilizers', 'SunMedium', 'https://images.unsplash.com/photo-1509391365360-2e959784a276?w=800&auto=format&fit=crop&q=80', array['Solar Flood Lights', 'Inverters & UPS', 'Solar Batteries', 'Voltage Stabilizers', 'Emergency Rechargeable Lights']),
+  ('cat-security-personal', 'Security & Smart Electronics', 'security-personal-electronics', 'WiFi CCTV cameras, DVR/NVR surveillance, fast chargers, power banks and smart sensors', 'ShieldCheck', 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80', array['CCTV & Security Cameras', 'Smart Home & Sensors', 'Fast Chargers & Cables', 'Power Banks', 'Audio Accessories'])
+on conflict (id) do nothing;
+
+-- Delivery Zones
+insert into public.delivery_zones (id, name, fee, estimated_time, minimum_order, free_threshold, active)
+values
+  ('zone-eldoret-cbd', 'Eldoret CBD & Surrounds (Zion Mall, Pioneer, West Indies, Kapsoya)', 0, 'Within 1 - 3 Hours (Free Express)', 500, 0, true),
+  ('zone-uasin-gishu', 'Uasin Gishu Greater (Langas, Huruma, Maili Nne, Chepkoilel, Turbo, Moiben)', 250, 'Same Day Delivery (2 - 5 Hours)', 500, 15000, true),
+  ('zone-rift-western', 'Rift Valley & Western Kenya (Kitale, Kapsabet, Kakamega, Bungoma, Nakuru, Kisumu)', 450, 'Next Day Dispatch / Courier Express', 1000, 30000, true),
+  ('zone-countrywide', 'Countrywide Kenya (Nairobi, Mombasa, Nyeri, Meru, Machakos, Garissa, etc.)', 750, '24 - 48 Hours Insured Courier to Door/Parcel Office', 1000, 50000, true)
+on conflict (id) do nothing;
+

@@ -85,10 +85,19 @@ export function useRealtime(options: UseRealtimeOptions) {
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
             console.log('[Supabase Realtime] Connected successfully to megacity-realtime channel');
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            console.warn('[Supabase Realtime] Channel status:', status);
           }
         });
 
+      const handleOnline = () => {
+        console.log('[Supabase Realtime] Network restored, resubscribing channel');
+        channel.subscribe();
+      };
+      window.addEventListener('online', handleOnline);
+
       return () => {
+        window.removeEventListener('online', handleOnline);
         supabase.removeChannel(channel);
       };
     }
@@ -99,6 +108,9 @@ export function useRealtime(options: UseRealtimeOptions) {
 
     function connect() {
       try {
+        if (eventSource) {
+          eventSource.close();
+        }
         eventSource = new EventSource('/api/events');
 
         eventSource.onmessage = (event) => {
@@ -129,16 +141,24 @@ export function useRealtime(options: UseRealtimeOptions) {
             eventSource.close();
             eventSource = null;
           }
-          reconnectTimeout = setTimeout(connect, 4000);
+          if (reconnectTimeout) clearTimeout(reconnectTimeout);
+          reconnectTimeout = setTimeout(connect, 3000);
         };
       } catch (e) {
-        reconnectTimeout = setTimeout(connect, 5000);
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        reconnectTimeout = setTimeout(connect, 4000);
       }
     }
+
+    const handleNetworkOnline = () => {
+      connect();
+    };
+    window.addEventListener('online', handleNetworkOnline);
 
     connect();
 
     return () => {
+      window.removeEventListener('online', handleNetworkOnline);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
       if (eventSource) eventSource.close();
     };

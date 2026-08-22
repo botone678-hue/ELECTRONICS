@@ -5,13 +5,19 @@ import { optionalAuth, requireAuth, AuthRequest } from '../auth';
 export const orderRouter = Router();
 
 // Place Order (Cash on Delivery / M-Pesa on Delivery)
-orderRouter.post('/checkout', optionalAuth, (req: AuthRequest, res: Response) => {
+const handleCheckout = (req: AuthRequest, res: Response) => {
   try {
     const {
       customerName,
       customerPhone,
       customerEmail,
       deliveryLocation,
+      deliveryCounty,
+      deliveryTown,
+      deliveryEstate,
+      deliveryLandmark,
+      deliveryInstructions,
+      zoneId,
       deliveryZoneId,
       paymentMethod,
       items
@@ -21,9 +27,37 @@ orderRouter.post('/checkout', optionalAuth, (req: AuthRequest, res: Response) =>
       return res.status(400).json({ error: 'Please enter your full name and phone number.' });
     }
 
-    if (!deliveryLocation || !deliveryLocation.town || !deliveryLocation.estate) {
+    let location: {
+      county: string;
+      town: string;
+      estate: string;
+      landmark?: string;
+      instructions?: string;
+    };
+
+    if (typeof deliveryLocation === 'object' && deliveryLocation !== null) {
+      location = {
+        county: deliveryLocation.county || deliveryCounty || 'Uasin Gishu',
+        town: deliveryLocation.town || deliveryTown || '',
+        estate: deliveryLocation.estate || deliveryEstate || '',
+        landmark: deliveryLocation.landmark || deliveryLandmark || '',
+        instructions: deliveryLocation.instructions || deliveryInstructions || ''
+      };
+    } else {
+      location = {
+        county: deliveryCounty || 'Uasin Gishu',
+        town: deliveryTown || (typeof deliveryLocation === 'string' ? deliveryLocation : ''),
+        estate: deliveryEstate || (typeof deliveryLocation === 'string' ? deliveryLocation : ''),
+        landmark: deliveryLandmark || '',
+        instructions: deliveryInstructions || ''
+      };
+    }
+
+    if (!location.town && !location.estate) {
       return res.status(400).json({ error: 'Please provide complete delivery details (Town and Estate).' });
     }
+    if (!location.town) location.town = location.estate;
+    if (!location.estate) location.estate = location.town;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Cart is empty. Please add products to your cart.' });
@@ -34,8 +68,8 @@ orderRouter.post('/checkout', optionalAuth, (req: AuthRequest, res: Response) =>
       customerName,
       customerPhone,
       customerEmail,
-      deliveryLocation,
-      deliveryZoneId: deliveryZoneId || 'zone-eldoret-cbd',
+      deliveryLocation: location,
+      deliveryZoneId: deliveryZoneId || zoneId || 'zone-eldoret-cbd',
       paymentMethod: paymentMethod === 'MPESA_ON_DELIVERY' ? 'MPESA_ON_DELIVERY' : 'CASH_ON_DELIVERY',
       items
     });
@@ -51,7 +85,10 @@ orderRouter.post('/checkout', optionalAuth, (req: AuthRequest, res: Response) =>
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Error processing checkout.' });
   }
-});
+};
+
+orderRouter.post('/checkout', optionalAuth, handleCheckout);
+orderRouter.post('/', optionalAuth, handleCheckout);
 
 // Track Order by Order Number (e.g. MC-2026-000101) or Phone
 orderRouter.get('/track/:query', (req, res) => {
