@@ -13,11 +13,13 @@ interface UseRealtimeOptions {
 export function useRealtime(options: UseRealtimeOptions) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  const channelNameRef = useRef(`megacity-realtime-${Math.random().toString(36).slice(2)}`);
 
   useEffect(() => {
     if (isSupabaseConfigured) {
+      const channelName = channelNameRef.current;
       const channel = supabase
-        .channel('megacity-realtime')
+        .channel(channelName)
         .on('broadcast', { event: 'order:created' }, ({ payload }) => optionsRef.current.onOrderCreated?.(payload))
         .on('broadcast', { event: 'order:status_updated' }, ({ payload }) => optionsRef.current.onOrderStatusUpdated?.(payload))
         .on('broadcast', { event: 'product:updated' }, ({ payload }) => optionsRef.current.onProductUpdated?.(payload))
@@ -41,18 +43,14 @@ export function useRealtime(options: UseRealtimeOptions) {
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload) => optionsRef.current.onNotificationCreated?.(payload.new))
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'business_settings' }, (payload) => optionsRef.current.onSettingsUpdated?.(payload.new));
 
-      // Every postgres/broadcast callback is registered BEFORE the single subscribe call.
       channel.subscribe((status) => {
         if (status === 'SUBSCRIBED') {
-          console.log('[Supabase Realtime] Connected successfully to megacity-realtime channel');
+          console.log(`[Supabase Realtime] Connected successfully to ${channelName}`);
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           console.warn('[Supabase Realtime] Channel status:', status);
         }
       });
 
-      // Do not call channel.subscribe() again on reconnect. Supabase manages the
-      // socket/channel lifecycle; re-subscribing here can attempt to mutate a
-      // channel after it is already subscribed and causes the reported exception.
       return () => {
         void supabase.removeChannel(channel);
       };
