@@ -98,6 +98,10 @@ const handleCheckout = async (req: AuthRequest, res: Response) => {
       quantity: Number(item.quantity)
     }));
 
+    const normalizedPaymentMethod = paymentMethod === 'MPESA_ON_DELIVERY'
+      ? 'MPESA_ON_DELIVERY'
+      : 'CASH_ON_DELIVERY';
+
     const { data, error } = await serverSupabase.rpc('place_order', {
       p_customer_id: req.user?.id || null,
       p_customer_name: customerName,
@@ -109,18 +113,50 @@ const handleCheckout = async (req: AuthRequest, res: Response) => {
       p_landmark: location.landmark || null,
       p_instructions: location.instructions || null,
       p_delivery_zone_id: deliveryZoneId || zoneId || 'zone-eldoret-cbd',
-      p_payment_method: paymentMethod === 'MPESA_ON_DELIVERY' ? 'MPESA_ON_DELIVERY' : 'CASH_ON_DELIVERY',
+      p_payment_method: normalizedPaymentMethod,
       p_items: normalizedItems
     });
 
     if (error) {
+      console.error('[checkout][place_order]', error);
       const message = error.message || 'Failed to place order.';
       const clientError = message.replace(/^ERROR:\s*/i, '').split('\n')[0];
       return res.status(400).json({ error: clientError });
     }
 
-    const order = await loadOrder(data.order_id);
-    if (!order) return res.status(500).json({ error: 'Order was created but could not be loaded.' });
+    // The database function is the source of truth for successful order creation.
+    // Do not turn a successful order into a 500 merely because the follow-up read
+    // is blocked by RLS/schema drift. Return the identifiers immediately.
+    const orderId = data?.order_id;
+    const orderNumber = data?.order_number;
+    if (!orderId || !orderNumber) {
+      console.error('[checkout] place_order returned an invalid payload:', data);
+      return res.status(500).json({ error: 'Order creation returned an invalid response. Please try again.' });
+    }
+
+    let order: any = {
+      id: orderId,
+      orderNumber,
+      customerId: req.user?.id || undefined,
+      customerName,
+      customerPhone,
+      customerEmail: customerEmail || undefined,
+      deliveryLocation: location,
+      deliveryZoneId: deliveryZoneId || zoneId || 'zone-eldoret-cbd',
+      paymentMethod: normalizedPaymentMethod,
+      paymentStatus: 'PENDING',
+      status: 'ORDER_RECEIVED',
+      items: normalizedItems,
+    };
+
+    try {
+      const loaded = await loadOrder(orderId);
+      if (loaded) order = loaded;
+    } catch (readError) {
+      // The order has already been committed by place_order. Log the read failure,
+      // but never report the checkout itself as failed.
+      console.error('[checkout][post-create-read]', readError);
+    }
 
     return res.status(201).json({ message: 'Order received successfully!', order });
   } catch (err: any) {
