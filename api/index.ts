@@ -1,5 +1,8 @@
 import type { Request, Response } from 'express';
-import app from '../server.ts';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { app } = require('../dist/server.cjs');
 
 export default function handler(req: Request, res: Response) {
   try {
