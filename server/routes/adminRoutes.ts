@@ -6,6 +6,16 @@ import { requireAdmin } from '../auth';
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
 
+const ORDER_STATUS_FLOW: Record<string, string[]> = {
+  ORDER_RECEIVED: ['CONFIRMED', 'CANCELLED'],
+  CONFIRMED: ['PROCESSING', 'CANCELLED'],
+  PROCESSING: ['READY_FOR_DELIVERY', 'CANCELLED'],
+  READY_FOR_DELIVERY: ['OUT_FOR_DELIVERY', 'CANCELLED'],
+  OUT_FOR_DELIVERY: ['DELIVERED'],
+  DELIVERED: [],
+  CANCELLED: [],
+};
+
 const mapOrder = (row: any, items: any[] = []) => ({
   id: row.id, orderNumber: row.order_number, customerId: row.customer_id || undefined,
   customerName: row.customer_name, customerPhone: row.customer_phone, customerEmail: row.customer_email || undefined,
@@ -57,17 +67,44 @@ adminRouter.get('/orders/:id', async (req, res) => {
 
 adminRouter.patch('/orders/:id/status', async (req, res) => {
   try {
-    const { status, note } = req.body;
-    const allowed = ['ORDER_RECEIVED','CONFIRMED','PROCESSING','READY_FOR_DELIVERY','OUT_FOR_DELIVERY','DELIVERED','CANCELLED'];
-    if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid order status.' });
+    const { status, note } = req.body || {};
+    if (typeof status !== 'string' || !Object.prototype.hasOwnProperty.call(ORDER_STATUS_FLOW, status)) {
+      return res.status(400).json({ error: 'Invalid order status.' });
+    }
 
-    const { data: current, error: currentError } = await serverSupabase.from('orders').select('status,status_history').eq('id', req.params.id).maybeSingle();
+    const { data: current, error: currentError } = await serverSupabase
+      .from('orders')
+      .select('status,status_history')
+      .eq('id', req.params.id)
+      .maybeSingle();
     if (currentError) throw currentError;
     if (!current) return res.status(404).json({ error: 'Order not found.' });
 
+    const currentStatus = String(current.status);
+    const allowedNext = ORDER_STATUS_FLOW[currentStatus] || [];
+    if (!allowedNext.includes(status)) {
+      return res.status(409).json({
+        error: `Invalid order status transition from ${currentStatus} to ${status}.`,
+        currentStatus,
+        allowedNext,
+      });
+    }
+
     const history = Array.isArray(current.status_history) ? current.status_history : [];
-    const updatedHistory = [...history, { status, timestamp: new Date().toISOString(), note: note || `Order status changed to ${status}.` }];
-    const { error } = await serverSupabase.from('orders').update({ status, status_history: updatedHistory, updated_at: new Date().toISOString() }).eq('id', req.params.id);
+    const updatedHistory = [
+      ...history,
+      {
+        status,
+        timestamp: new Date().toISOString(),
+        note: typeof note === 'string' && note.trim() ? note.trim().slice(0, 500) : `Order status changed to ${status}.`,
+      },
+    ];
+
+    const { error } = await serverSupabase
+      .from('orders')
+      .update({ status, status_history: updatedHistory, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .eq('status', currentStatus);
     if (error) throw error;
 
     const order = await loadOrder(req.params.id);
@@ -101,5 +138,5 @@ adminRouter.patch('/notifications/:id/read', (req, res) => res.json({ success: d
 adminRouter.post('/notifications/read-all', (_req, res) => { db.markAllNotificationsRead(); res.json({ success: true }); });
 adminRouter.get('/delivery-zones', (_req, res) => res.json({ zones: db.getDeliveryZones() }));
 adminRouter.put('/delivery-zones', (req, res) => { try { if (!Array.isArray(req.body.zones)) return res.status(400).json({ error: 'Invalid zones data.' }); const updated = db.updateDeliveryZones(req.body.zones); res.json({ message: 'Delivery zones updated.', zones: updated }); } catch (err: any) { res.status(500).json({ error: err.message || 'Error saving zones' }); } });
-adminRouter.get('/settings', (_req, res) => res.json({ settings: db.getSettings() }));
+adminRouter.get('/settings', (_req, res) => { try { return res.json({ settings: db.getSettings() }); } catch (err: any) { return res.status(500).json({ error: err.message || 'Error loading settings' }); } });
 adminRouter.put('/settings', (req, res) => { try { const updated = db.updateSettings(req.body); res.json({ message: 'Business settings updated.', settings: updated }); } catch (err: any) { res.status(500).json({ error: err.message || 'Error updating settings' }); } });
