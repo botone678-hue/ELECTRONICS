@@ -49,24 +49,60 @@ create policy "Users can remove own wishlist"
   on public.wishlists for delete
   using (auth.uid() = customer_id);
 
--- Profiles: users may update profile details, but role/email identity must be
--- controlled by the server/auth system. RLS cannot express column-level
--- restrictions, so application routes must continue to omit those fields.
-
 -- Notifications are admin-only. Explicitly deny client inserts/deletes by
 -- keeping only admin update/select policies; service_role creates alerts.
 drop policy if exists "Admins can insert notifications" on public.notifications;
 drop policy if exists "Admins can delete notifications" on public.notifications;
 
--- Realtime consumers must be governed by the same row visibility rules.
--- Orders: customers see only their own rows; admins see all.
--- Products/settings remain public according to their existing SELECT policies.
--- Notifications are admin-only according to the existing SELECT policy.
-
--- Enforce unique review per customer/product at the database layer.
+-- Enforce one review per customer/product at the database layer.
 create unique index if not exists ux_reviews_customer_product
   on public.reviews(customer_id, product_id)
   where customer_id is not null;
+
+-- Enforce verified purchases even for trusted server writes. The application
+-- must not be able to accidentally persist an unverified review.
+create or replace function public.enforce_verified_product_review()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_purchased boolean;
+  v_name text;
+begin
+  if new.customer_id is null then
+    raise exception 'A review requires an authenticated customer';
+  end if;
+
+  select exists (
+    select 1
+    from public.order_items oi
+    join public.orders o on o.id = oi.order_id
+    where oi.product_id = new.product_id
+      and o.customer_id = new.customer_id
+      and o.status = 'DELIVERED'
+  ), p.name
+  into v_purchased, v_name
+  from public.profiles p
+  where p.id = new.customer_id;
+
+  if not v_purchased then
+    raise exception 'Only customers with a delivered purchase can review this product';
+  end if;
+
+  new.verified_purchase := true;
+  if v_name is not null then
+    new.customer_name := v_name;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists reviews_require_delivered_purchase on public.reviews;
+create trigger reviews_require_delivered_purchase
+before insert or update on public.reviews
+for each row execute function public.enforce_verified_product_review();
 
 -- Make review aggregates authoritative and prevent stale rating/review_count.
 create or replace function public.refresh_product_review_stats()
@@ -99,9 +135,9 @@ create trigger reviews_refresh_product_stats
 after insert or update or delete on public.reviews
 for each row execute function public.refresh_product_review_stats();
 
--- Lock down the helper functions against search_path hijacking.
+-- Lock down helper functions against search_path hijacking.
 alter function public.is_admin() set search_path = public, pg_temp;
 alter function public.generate_order_number() set search_path = public, pg_temp;
 
--- Realtime publication is intentionally limited to tables used by the app.
--- RLS remains the authorization boundary for Postgres Changes.
+-- Realtime consumers use Postgres Changes only. RLS is the database
+-- authorization boundary for rows delivered through realtime.
