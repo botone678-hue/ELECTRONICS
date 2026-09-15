@@ -6,6 +6,7 @@ import { authRouter } from './server/routes/authRoutes';
 import { productRouter } from './server/routes/productRoutes';
 import { orderRouter } from './server/routes/orderRoutes';
 import { adminRouter } from './server/routes/adminRoutes';
+import { adminProductionHardeningRouter } from './server/routes/adminProductionHardeningRoutes';
 import { eventRouter } from './server/routes/eventRoutes';
 
 export const app = express();
@@ -34,6 +35,9 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api', productRouter);
 app.use('/api/orders', orderRouter);
+// These production-hardening routes intentionally precede the legacy admin routes so
+// the hardened implementations handle the overlapping endpoints first.
+app.use('/api/admin', adminProductionHardeningRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api', eventRouter);
 
