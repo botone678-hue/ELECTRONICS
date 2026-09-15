@@ -1,29 +1,19 @@
 import { Router } from 'express';
-import { registerEventClient } from '../db';
+import { isServerSupabaseConfigured } from '../supabase';
 
 export const eventRouter = Router();
 
-eventRouter.get('/events', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders?.();
+// Legacy SSE realtime is intentionally disabled. Production realtime is handled
+// by Supabase Postgres Changes so row visibility is controlled by Auth/RLS.
+eventRouter.get('/events', (_req, res) => {
+  if (isServerSupabaseConfigured) {
+    return res.status(410).json({
+      error: 'Legacy realtime endpoint disabled',
+      realtime: 'supabase-postgres-changes'
+    });
+  }
 
-  // Send initial connection event
-  res.write(`data: ${JSON.stringify({ event: 'connected', timestamp: new Date().toISOString() })}\n\n`);
-
-  const unregister = registerEventClient((msg) => {
-    res.write(`data: ${JSON.stringify(msg)}\n\n`);
-  });
-
-  // Keep-alive heartbeat every 25 seconds
-  const heartbeat = setInterval(() => {
-    res.write(`: heartbeat\n\n`);
-  }, 25000);
-
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    unregister();
-    res.end();
+  return res.status(503).json({
+    error: 'Realtime unavailable: Supabase is not configured'
   });
 });
