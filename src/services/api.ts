@@ -71,6 +71,10 @@ export const api = {
     const { data, error, count } = await query; if (error) throw new Error(error.message);
     return { products: (data || []).map(mapProduct), total: count || 0 };
   },
+  async getAdminProducts(): Promise<{ products: Product[]; total: number }> {
+    const res = await fetch(`${API_BASE}/admin/products`, { headers: getAuthHeaders() });
+    return handleResponse(res);
+  },
   async getProduct(identifier: string): Promise<{ product: Product; related: Product[]; reviews: Review[] }> { let q = supabase.from('products').select('*').eq('is_active', true); q = identifier.includes('-') ? q.or(`id.eq.${identifier},slug.eq.${identifier}`) : q.eq('slug', identifier); const { data, error } = await q.limit(1).maybeSingle(); if (error) throw new Error(error.message); if (!data) throw new Error('Product not found.'); const product = mapProduct(data); const { data: relatedRows } = await supabase.from('products').select('*').eq('is_active', true).eq('category_id', product.categoryId).neq('id', product.id).limit(6); const { data: reviewRows } = await supabase.from('reviews').select('*').eq('product_id', product.id).order('created_at', { ascending: false }); const reviews: Review[] = (reviewRows || []).map((r: any) => ({ id: r.id, productId: r.product_id, customerId: r.customer_id, customerName: r.customer_name, rating: r.rating, comment: r.comment, verifiedPurchase: r.verified_purchase, createdAt: r.created_at })); return { product, related: (relatedRows || []).map(mapProduct), reviews }; },
   async getCategories(): Promise<{ categories: Category[] }> { const { data, error } = await supabase.from('categories').select('*').order('name'); if (error) throw new Error(error.message); return { categories: (data || []).map(mapCategory) }; },
   async submitReview(productId: string, data: { customerName?: string; rating: number; comment: string }): Promise<{ message: string; review: Review }> { const res = await fetch(`${API_BASE}/products/${productId}/reviews`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(data) }); return handleResponse(res); },
