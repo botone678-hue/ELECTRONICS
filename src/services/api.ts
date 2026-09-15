@@ -52,6 +52,16 @@ function mapSettings(row: any): BusinessSettings {
 
 export const api = {
   async getProducts(params?: { categoryId?: string; subcategory?: string; brand?: string; minPrice?: number; maxPrice?: number; featured?: boolean; isHotDeal?: boolean; inStockOnly?: boolean; search?: string; sort?: string; limit?: number; offset?: number; }): Promise<{ products: Product[]; total: number }> {
+    // Admin catalog reads must use the authorized server endpoint so inactive products are
+    // visible to management and the browser is not dependent on catalog RLS for admin data.
+    if (typeof window !== 'undefined') {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle();
+        if (profile?.role === 'admin') return this.getAdminProducts();
+      }
+    }
+
     let query = supabase.from('products').select('*', { count: 'exact' }).eq('is_active', true);
     if (params?.categoryId) query = query.eq('category_id', params.categoryId);
     if (params?.subcategory) query = query.ilike('subcategory', params.subcategory);
@@ -70,6 +80,10 @@ export const api = {
     const offset = params?.offset || 0; const limit = Math.min(params?.limit || 100, 1000); query = query.range(offset, offset + limit - 1);
     const { data, error, count } = await query; if (error) throw new Error(error.message);
     return { products: (data || []).map(mapProduct), total: count || 0 };
+  },
+  async getAdminProducts(): Promise<{ products: Product[]; total: number }> {
+    const res = await fetch(`${API_BASE}/admin/products`, { headers: getAuthHeaders() });
+    return handleResponse(res);
   },
   async getProduct(identifier: string): Promise<{ product: Product; related: Product[]; reviews: Review[] }> { let q = supabase.from('products').select('*').eq('is_active', true); q = identifier.includes('-') ? q.or(`id.eq.${identifier},slug.eq.${identifier}`) : q.eq('slug', identifier); const { data, error } = await q.limit(1).maybeSingle(); if (error) throw new Error(error.message); if (!data) throw new Error('Product not found.'); const product = mapProduct(data); const { data: relatedRows } = await supabase.from('products').select('*').eq('is_active', true).eq('category_id', product.categoryId).neq('id', product.id).limit(6); const { data: reviewRows } = await supabase.from('reviews').select('*').eq('product_id', product.id).order('created_at', { ascending: false }); const reviews: Review[] = (reviewRows || []).map((r: any) => ({ id: r.id, productId: r.product_id, customerId: r.customer_id, customerName: r.customer_name, rating: r.rating, comment: r.comment, verifiedPurchase: r.verified_purchase, createdAt: r.created_at })); return { product, related: (relatedRows || []).map(mapProduct), reviews }; },
   async getCategories(): Promise<{ categories: Category[] }> { const { data, error } = await supabase.from('categories').select('*').order('name'); if (error) throw new Error(error.message); return { categories: (data || []).map(mapCategory) }; },
