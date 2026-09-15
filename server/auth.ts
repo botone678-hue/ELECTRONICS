@@ -16,7 +16,11 @@ export interface AuthRequest extends Request {
 }
 
 export function generateToken(user: { id: string; email: string; role: UserRole; name: string }): string {
-  if (!JWT_SECRET) return `session_${Buffer.from(JSON.stringify({ id: user.id, email: user.email, role: user.role, name: user.name, ts: Date.now() })).toString('base64url')}`;
+  // Never issue an unsigned/fabricated session token. In production this must
+  // fail closed so a missing secret cannot become an authentication bypass.
+  if (!JWT_SECRET) {
+    throw new Error('Server authentication secret is not configured.');
+  }
   return jwt.sign({ id: user.id, email: user.email, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '30d' });
 }
 
@@ -43,27 +47,17 @@ export async function verifyToken(token: string) {
         };
       }
     } catch (error) {
-      console.warn('[auth][verifyToken] Supabase verification failed; continuing with fallback:', error instanceof Error ? error.message : error);
+      console.warn('[auth][verifyToken] Supabase verification failed; continuing with JWT verification:', error instanceof Error ? error.message : error);
     }
   }
 
-  if (token.startsWith('session_')) {
-    try {
-      return JSON.parse(Buffer.from(token.replace('session_', ''), 'base64url').toString('utf-8'));
-    } catch {
-      return null;
-    }
-  }
+  if (!JWT_SECRET) return null;
 
-  if (JWT_SECRET) {
-    try {
-      return jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: UserRole; name: string };
-    } catch {
-      return null;
-    }
+  try {
+    return jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: UserRole; name: string };
+  } catch {
+    return null;
   }
-
-  return null;
 }
 
 export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
