@@ -52,14 +52,14 @@ function mapSettings(row: any): BusinessSettings {
 
 export const api = {
   async getProducts(params?: { categoryId?: string; subcategory?: string; brand?: string; minPrice?: number; maxPrice?: number; featured?: boolean; isHotDeal?: boolean; inStockOnly?: boolean; search?: string; sort?: string; limit?: number; offset?: number; }): Promise<{ products: Product[]; total: number }> {
-    // Admin catalog reads must use the authorized server endpoint so inactive products are
-    // visible to management and the browser is not dependent on catalog RLS for admin data.
-    if (typeof window !== 'undefined') {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle();
-        if (profile?.role === 'admin') return this.getAdminProducts();
-      }
+    // The admin dashboard already has an authenticated management session. Do not rely on
+    // Supabase browser-session detection here because the app's management auth uses its own
+    // megacity_token. Try the protected admin catalog first when that token exists; ordinary
+    // customer tokens receive 401/403 and continue to the public active-product query.
+    if (typeof window !== 'undefined' && localStorage.getItem('megacity_token')) {
+      const adminResponse = await fetch(`${API_BASE}/admin/products`, { headers: getAuthHeaders() });
+      if (adminResponse.ok) return handleResponse(adminResponse);
+      if (adminResponse.status !== 401 && adminResponse.status !== 403) return handleResponse(adminResponse);
     }
 
     let query = supabase.from('products').select('*', { count: 'exact' }).eq('is_active', true);
