@@ -37,61 +37,49 @@ function mapRealtimeOrder(row: any) {
 export function useRealtime(options: UseRealtimeOptions) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
-  const channelNameRef = useRef(`megacity-realtime-${Math.random().toString(36).slice(2)}`);
 
   useEffect(() => {
-    if (isSupabaseConfigured) {
-      const channelName = channelNameRef.current;
-      const channel = supabase
-        .channel(channelName)
-        .on('broadcast', { event: 'order:created' }, ({ payload }) => optionsRef.current.onOrderCreated?.(payload))
-        .on('broadcast', { event: 'order:status_updated' }, ({ payload }) => optionsRef.current.onOrderStatusUpdated?.(payload))
-        .on('broadcast', { event: 'product:updated' }, ({ payload }) => optionsRef.current.onProductUpdated?.(payload))
-        .on('broadcast', { event: 'inventory:updated' }, ({ payload }) => optionsRef.current.onInventoryUpdated?.(payload))
-        .on('broadcast', { event: 'notification:created' }, ({ payload }) => optionsRef.current.onNotificationCreated?.(payload))
-        .on('broadcast', { event: 'settings:updated' }, ({ payload }) => optionsRef.current.onSettingsUpdated?.(payload))
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload) => optionsRef.current.onOrderCreated?.(mapRealtimeOrder(payload.new)))
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
-          const updated = payload.new as any;
-          optionsRef.current.onOrderStatusUpdated?.({ orderId: updated.id, orderNumber: updated.order_number || updated.orderNumber, status: updated.status || updated.order_status, history: updated.status_history || updated.statusHistory || [] });
-        })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, (payload) => {
-          optionsRef.current.onProductUpdated?.(payload.new);
-          optionsRef.current.onInventoryUpdated?.(payload.new);
-        })
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload) => optionsRef.current.onNotificationCreated?.(payload.new))
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'business_settings' }, (payload) => optionsRef.current.onSettingsUpdated?.(payload.new));
+    if (!isSupabaseConfigured) {
+      console.warn('[Supabase Realtime] Supabase is not configured; realtime is disabled rather than using an unauthenticated SSE fallback.');
+      return;
+    }
 
-      channel.subscribe((status) => {
-        if (status === 'SUBSCRIBED') console.log(`[Supabase Realtime] Connected successfully to ${channelName}`);
-        else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') console.warn('[Supabase Realtime] Channel status:', status);
+    // Production realtime uses Postgres Changes only. Do not use unrestricted
+    // broadcast payloads for records that may contain customer/order PII.
+    const channel = supabase
+      .channel('megacity-postgres-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload) => {
+        optionsRef.current.onOrderCreated?.(mapRealtimeOrder(payload.new));
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
+        const updated = payload.new as any;
+        optionsRef.current.onOrderStatusUpdated?.({
+          orderId: updated.id,
+          orderNumber: updated.order_number || updated.orderNumber,
+          status: updated.status || updated.order_status,
+          history: updated.status_history || updated.statusHistory || []
+        });
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, (payload) => {
+        optionsRef.current.onProductUpdated?.(payload.new);
+        optionsRef.current.onInventoryUpdated?.(payload.new);
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload) => {
+        optionsRef.current.onNotificationCreated?.(payload.new);
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'business_settings' }, (payload) => {
+        optionsRef.current.onSettingsUpdated?.(payload.new);
       });
 
-      return () => { void supabase.removeChannel(channel); };
-    }
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') console.log('[Supabase Realtime] Connected using Postgres Changes');
+      else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        console.warn('[Supabase Realtime] Channel status:', status);
+      }
+    });
 
-    let eventSource: EventSource | null = null;
-    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-    function connect() {
-      try {
-        eventSource?.close();
-        eventSource = new EventSource('/api/events');
-        eventSource.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            const { event: evtType, payload } = data;
-            if (evtType === 'order:created') optionsRef.current.onOrderCreated?.(payload);
-            else if (evtType === 'order:status_updated') optionsRef.current.onOrderStatusUpdated?.(payload);
-            else if (evtType === 'product:updated') optionsRef.current.onProductUpdated?.(payload);
-            else if (evtType === 'inventory:updated') optionsRef.current.onInventoryUpdated?.(payload);
-            else if (evtType === 'notification:created') optionsRef.current.onNotificationCreated?.(payload);
-            else if (evtType === 'settings:updated') optionsRef.current.onSettingsUpdated?.(payload);
-          } catch {}
-        };
-        eventSource.onerror = () => { eventSource?.close(); eventSource = null; if (reconnectTimeout) clearTimeout(reconnectTimeout); reconnectTimeout = setTimeout(connect, 3000); };
-      } catch { if (reconnectTimeout) clearTimeout(reconnectTimeout); reconnectTimeout = setTimeout(connect, 4000); }
-    }
-    connect();
-    return () => { if (reconnectTimeout) clearTimeout(reconnectTimeout); eventSource?.close(); };
+    return () => {
+      void supabase.removeChannel(channel);
+    };
   }, []);
 }
