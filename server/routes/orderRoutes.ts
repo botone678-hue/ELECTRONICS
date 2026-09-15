@@ -26,6 +26,14 @@ const mapOrder = (row: any, items: any[] = []) => ({
   updatedAt: row.updated_at
 });
 
+const mapPublicTrackingOrder = (row: any) => ({
+  orderNumber: row.order_number,
+  status: row.status,
+  paymentStatus: row.payment_status,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
+});
+
 async function loadOrder(id: string) {
   const { data: row, error } = await serverSupabase.from('orders').select('*').eq('id', id).maybeSingle();
   if (error) throw error;
@@ -35,11 +43,15 @@ async function loadOrder(id: string) {
   return mapOrder(row, items || []);
 }
 
-async function loadOrderByNumber(orderNumber: string) {
-  const { data: row, error } = await serverSupabase.from('orders').select('*').ilike('order_number', orderNumber).maybeSingle();
+async function loadPublicTrackingOrderByNumber(orderNumber: string) {
+  const { data: row, error } = await serverSupabase
+    .from('orders')
+    .select('order_number,status,payment_status,created_at,updated_at')
+    .ilike('order_number', orderNumber)
+    .maybeSingle();
   if (error) throw error;
   if (!row) return null;
-  return loadOrder(row.id);
+  return mapPublicTrackingOrder(row);
 }
 
 const handleCheckout = async (req: AuthRequest, res: Response) => {
@@ -59,27 +71,40 @@ const handleCheckout = async (req: AuthRequest, res: Response) => {
 
     const normalizedItems = items.map((item: any) => ({ productId: String(item.productId), quantity: Number(item.quantity) }));
     const normalizedPaymentMethod = paymentMethod === 'MPESA_ON_DELIVERY' ? 'MPESA_ON_DELIVERY' : 'CASH_ON_DELIVERY';
-    const requestedCustomerId = req.user?.id || null;
 
     let customerId: string | null = null;
-    if (requestedCustomerId) {
+    let orderCustomerName = customerName;
+    let orderCustomerPhone = customerPhone;
+    let orderCustomerEmail = customerEmail || null;
+
+    if (req.user?.id) {
       const { data: profile, error: profileError } = await serverSupabase
         .from('profiles')
-        .select('id')
-        .eq('id', requestedCustomerId)
+        .select('id,name,email,phone')
+        .eq('id', req.user.id)
         .maybeSingle();
+
       if (profileError) {
-        console.warn('[checkout][profile-lookup]', profileError.message);
-      } else if (profile?.id) {
-        customerId = profile.id;
+        console.error('[checkout][profile-lookup]', profileError);
+        return res.status(500).json({ error: 'Unable to verify your customer profile.' });
       }
+      if (!profile) return res.status(403).json({ error: 'Your customer profile is not available.' });
+
+      customerId = profile.id;
+      orderCustomerName = profile.name;
+      orderCustomerPhone = profile.phone;
+      orderCustomerEmail = profile.email;
+    }
+
+    if (!orderCustomerName || !orderCustomerPhone) {
+      return res.status(400).json({ error: 'Customer name and phone are required to place an order.' });
     }
 
     const { data, error } = await serverSupabase.rpc('place_order', {
       p_customer_id: customerId,
-      p_customer_name: customerName,
-      p_customer_phone: customerPhone,
-      p_customer_email: customerEmail || null,
+      p_customer_name: orderCustomerName,
+      p_customer_phone: orderCustomerPhone,
+      p_customer_email: orderCustomerEmail,
       p_county: location.county,
       p_town: location.town,
       p_estate: location.estate,
@@ -104,7 +129,7 @@ const handleCheckout = async (req: AuthRequest, res: Response) => {
       return res.status(500).json({ error: 'Order creation returned an invalid response. Please try again.' });
     }
 
-    let order: any = { id: orderId, orderNumber, customerId: customerId || undefined, customerName, customerPhone, customerEmail: customerEmail || undefined, deliveryLocation: location, deliveryZoneId: deliveryZoneId || zoneId || 'zone-eldoret-cbd', paymentMethod: normalizedPaymentMethod, paymentStatus: 'PENDING', status: 'ORDER_RECEIVED', items: normalizedItems };
+    let order: any = { id: orderId, orderNumber, customerId: customerId || undefined, customerName: orderCustomerName, customerPhone: orderCustomerPhone, customerEmail: orderCustomerEmail || undefined, deliveryLocation: location, deliveryZoneId: deliveryZoneId || zoneId || 'zone-eldoret-cbd', paymentMethod: normalizedPaymentMethod, paymentStatus: 'PENDING', status: 'ORDER_RECEIVED', items: normalizedItems };
     try {
       const loaded = await loadOrder(orderId);
       if (loaded) order = loaded;
@@ -125,19 +150,11 @@ orderRouter.post('/', optionalAuth, handleCheckout);
 orderRouter.get('/track/:query', async (req, res) => {
   try {
     const clean = req.params.query.trim();
-    let order = await loadOrderByNumber(clean);
-    if (!order) {
-      const normalized = clean.replace(/\s+/g, '');
-      if (!normalized) return res.status(400).json({ error: 'Please provide an order number or phone number.' });
-      const { data: rows, error } = await serverSupabase
-        .from('orders')
-        .select('id,order_number,customer_phone,status,payment_status,created_at,updated_at')
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      const match = (rows || []).find((r: any) => String(r.customer_phone || '').replace(/\s+/g, '') === normalized);
-      if (match) order = await loadOrder(match.id);
-    }
-    if (!order) return res.status(404).json({ error: `No order found for "${clean}". Please check your order number or phone number.` });
+    if (!clean) return res.status(400).json({ error: 'Please provide an order number.' });
+
+    const order = await loadPublicTrackingOrderByNumber(clean);
+    if (!order) return res.status(404).json({ error: `No order found for \"${clean}\". Please check your order number.` });
+
     return res.json({ order });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Error tracking order.' });
