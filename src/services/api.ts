@@ -52,6 +52,16 @@ function mapSettings(row: any): BusinessSettings {
 
 export const api = {
   async getProducts(params?: { categoryId?: string; subcategory?: string; brand?: string; minPrice?: number; maxPrice?: number; featured?: boolean; isHotDeal?: boolean; inStockOnly?: boolean; search?: string; sort?: string; limit?: number; offset?: number; }): Promise<{ products: Product[]; total: number }> {
+    // Admin catalog reads must use the authorized server endpoint so inactive products are
+    // visible to management and the browser is not dependent on catalog RLS for admin data.
+    if (typeof window !== 'undefined') {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle();
+        if (profile?.role === 'admin') return this.getAdminProducts();
+      }
+    }
+
     let query = supabase.from('products').select('*', { count: 'exact' }).eq('is_active', true);
     if (params?.categoryId) query = query.eq('category_id', params.categoryId);
     if (params?.subcategory) query = query.ilike('subcategory', params.subcategory);
