@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { serverSupabase, isServerSupabaseConfigured } from '../supabase';
-import { optionalAuth, AuthRequest } from '../auth';
+import { requireAuth, AuthRequest } from '../auth';
 
 export const productRouter = Router();
 
@@ -53,7 +53,6 @@ function mapProduct(row: any) {
   };
 }
 
-// Get Categories — production source is Supabase, never process-local seed data.
 productRouter.get('/categories', async (_req, res) => {
   if (!requireCatalogDatabase(res)) return;
   try {
@@ -141,9 +140,90 @@ productRouter.get('/products/:identifier', async (req, res) => {
   }
 });
 
-// Review creation remains disabled until its verified-purchase path is backed by the production database.
-productRouter.post('/products/:id/reviews', optionalAuth, (_req: AuthRequest, res: Response) => {
-  res.status(503).json({ error: 'Review submission is temporarily unavailable while the production review service is being migrated.' });
+// Only authenticated customers with a delivered purchase of this exact product may review it.
+// The server derives customer identity from the verified session and never trusts customer_id,
+// customer_name, or verified_purchase from the request body.
+productRouter.post('/products/:id/reviews', requireAuth, async (req: AuthRequest, res: Response) => {
+  if (!requireCatalogDatabase(res)) return;
+  try {
+    const productId = req.params.id.trim();
+    const rating = Number(req.body?.rating);
+    const comment = typeof req.body?.comment === 'string' ? req.body.comment.trim() : '';
+
+    if (!productId) return res.status(400).json({ error: 'Product is required.' });
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be an integer from 1 to 5.' });
+    }
+    if (comment.length > 2000) return res.status(400).json({ error: 'Review comment is too long.' });
+
+    const customerId = req.user!.id;
+    const { data: product, error: productError } = await serverSupabase
+      .from('products')
+      .select('id,is_active')
+      .eq('id', productId)
+      .maybeSingle();
+    if (productError) throw productError;
+    if (!product || !product.is_active) return res.status(404).json({ error: 'Product not found.' });
+
+    const { data: deliveredOrders, error: ordersError } = await serverSupabase
+      .from('orders')
+      .select('id')
+      .eq('customer_id', customerId)
+      .eq('status', 'DELIVERED')
+      .limit(100);
+    if (ordersError) throw ordersError;
+    const orderIds = (deliveredOrders || []).map((order: any) => order.id);
+    if (orderIds.length === 0) {
+      return res.status(403).json({ error: 'You can review this product only after a delivered purchase.' });
+    }
+
+    const { data: purchasedItem, error: itemError } = await serverSupabase
+      .from('order_items')
+      .select('id')
+      .in('order_id', orderIds)
+      .eq('product_id', productId)
+      .limit(1)
+      .maybeSingle();
+    if (itemError) throw itemError;
+    if (!purchasedItem) {
+      return res.status(403).json({ error: 'You can review this product only after a delivered purchase.' });
+    }
+
+    const { data: existingReview, error: existingError } = await serverSupabase
+      .from('reviews')
+      .select('id')
+      .eq('product_id', productId)
+      .eq('customer_id', customerId)
+      .limit(1)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (existingReview) return res.status(409).json({ error: 'You have already reviewed this product.' });
+
+    const { data: profile, error: profileError } = await serverSupabase
+      .from('profiles')
+      .select('name')
+      .eq('id', customerId)
+      .maybeSingle();
+    if (profileError) throw profileError;
+
+    const { data: review, error: insertError } = await serverSupabase
+      .from('reviews')
+      .insert({
+        product_id: productId,
+        customer_id: customerId,
+        customer_name: profile?.name || req.user!.name || 'Customer',
+        rating,
+        comment,
+        verified_purchase: true,
+      })
+      .select('*')
+      .single();
+    if (insertError) throw insertError;
+
+    res.status(201).json({ message: 'Review submitted successfully.', review });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Error submitting review.' });
+  }
 });
 
 productRouter.get('/delivery-zones', async (_req, res) => {
