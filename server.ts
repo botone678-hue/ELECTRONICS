@@ -7,6 +7,7 @@ import { productRouter } from './server/routes/productRoutes';
 import { orderRouter } from './server/routes/orderRoutes';
 import { adminRouter } from './server/routes/adminRoutes';
 import { eventRouter } from './server/routes/eventRoutes';
+import { wishlistRouter } from './server/routes/wishlistRoutes';
 
 export const app = express();
 
@@ -35,6 +36,7 @@ app.use('/api/auth', authRouter);
 app.use('/api', productRouter);
 app.use('/api/orders', orderRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api', wishlistRouter);
 app.use('/api', eventRouter);
 
 app.use('/api/*', (_req, res) => {
