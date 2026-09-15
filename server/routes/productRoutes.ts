@@ -16,17 +16,14 @@ function mapCategory(row: any) {
     name: row.name,
     slug: row.slug,
     description: row.description || '',
-    image: row.image || row.image_url || '',
+    image: row.image_url || '',
+    icon: row.icon || '',
+    subcategories: row.subcategories || [],
     createdAt: row.created_at,
   };
 }
 
-function mapProduct(row: any, images: any[] = []) {
-  const imageUrls = images
-    .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
-    .map((image) => image.image_url || image.url)
-    .filter(Boolean);
-
+function mapProduct(row: any) {
   return {
     id: row.id,
     name: row.name,
@@ -34,7 +31,7 @@ function mapProduct(row: any, images: any[] = []) {
     sku: row.sku,
     brand: row.brand,
     categoryId: row.category_id,
-    categoryName: row.category_name || row.category?.name || '',
+    categoryName: row.category_name || '',
     subcategory: row.subcategory || '',
     description: row.description || '',
     price: Number(row.price || 0),
@@ -44,34 +41,16 @@ function mapProduct(row: any, images: any[] = []) {
     lowStockThreshold: Number(row.low_stock_threshold || 0),
     warranty: row.warranty || '',
     featured: Boolean(row.featured),
-    isHotDeal: Boolean(row.is_hot_deal),
+    isHotDeal: Boolean(row.hot_deal),
     isNew: Boolean(row.is_new),
     isActive: Boolean(row.is_active),
-    images: imageUrls,
+    images: Array.isArray(row.images) ? row.images : [],
     specifications: row.specifications || {},
     rating: Number(row.rating || 0),
     reviewCount: Number(row.review_count || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
-
-async function loadProductImages(productIds: string[]) {
-  if (!productIds.length) return new Map<string, any[]>();
-  const { data, error } = await serverSupabase
-    .from('product_images')
-    .select('*')
-    .in('product_id', productIds)
-    .order('sort_order', { ascending: true });
-  if (error) throw error;
-
-  const grouped = new Map<string, any[]>();
-  for (const image of data || []) {
-    const list = grouped.get(image.product_id) || [];
-    list.push(image);
-    grouped.set(image.product_id, list);
-  }
-  return grouped;
 }
 
 // Get Categories — production source is Supabase, never process-local seed data.
@@ -112,10 +91,10 @@ productRouter.get('/products', async (req, res) => {
     if (minPrice) query = query.gte('price', Number(minPrice));
     if (maxPrice) query = query.lte('price', Number(maxPrice));
     if (featured === 'true') query = query.eq('featured', true);
-    if (isHotDeal === 'true') query = query.eq('is_hot_deal', true);
+    if (isHotDeal === 'true') query = query.eq('hot_deal', true);
     if (inStockOnly === 'true') query = query.gt('stock_quantity', 0);
     if (search) {
-      const q = String(search).trim().replace(/,/g, ' ');
+      const q = String(search).trim();
       if (q) query = query.or(`name.ilike.%${q}%,brand.ilike.%${q}%,sku.ilike.%${q}%,description.ilike.%${q}%`);
     }
 
@@ -127,10 +106,7 @@ productRouter.get('/products', async (req, res) => {
 
     const { data, error, count } = await query.range(safeOffset, safeOffset + safeLimit - 1);
     if (error) throw error;
-    const rows = data || [];
-    const imageMap = await loadProductImages(rows.map((p: any) => p.id));
-    const products = rows.map((row: any) => mapProduct(row, imageMap.get(row.id) || []));
-    res.json({ products, total: count || 0 });
+    res.json({ products: (data || []).map(mapProduct), total: count || 0 });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Error fetching products.' });
   }
@@ -150,16 +126,13 @@ productRouter.get('/products/:identifier', async (req, res) => {
     }
     if (!productRow || !productRow.is_active) return res.status(404).json({ error: 'Product not found.' });
 
-    const imageMap = await loadProductImages([productRow.id]);
-    const product = mapProduct(productRow, imageMap.get(productRow.id) || []);
-
+    const product = mapProduct(productRow);
     const { data: relatedRows, error: relatedError } = await serverSupabase
       .from('products').select('*').eq('is_active', true).eq('category_id', productRow.category_id).neq('id', productRow.id).limit(6);
     if (relatedError) throw relatedError;
-    const relatedMap = await loadProductImages((relatedRows || []).map((p: any) => p.id));
-    const related = (relatedRows || []).map((p: any) => mapProduct(p, relatedMap.get(p.id) || []));
+    const related = (relatedRows || []).map(mapProduct);
 
-    const { data: reviews, error: reviewError } = await serverSupabase.from('reviews').select('*').eq('product_id', productRow.id).eq('is_approved', true).order('created_at', { ascending: false });
+    const { data: reviews, error: reviewError } = await serverSupabase.from('reviews').select('*').eq('product_id', productRow.id).order('created_at', { ascending: false });
     if (reviewError) throw reviewError;
 
     res.json({ product, related, reviews: reviews || [] });
@@ -168,9 +141,9 @@ productRouter.get('/products/:identifier', async (req, res) => {
   }
 });
 
-// Review creation remains behind the authenticated Supabase identity. Review persistence is migrated separately.
-productRouter.post('/products/:id/reviews', optionalAuth, (req: AuthRequest, res: Response) => {
-  return res.status(503).json({ error: 'Review submission is temporarily unavailable while the production review service is being migrated.' });
+// Review creation remains disabled until its verified-purchase path is backed by the production database.
+productRouter.post('/products/:id/reviews', optionalAuth, (_req: AuthRequest, res: Response) => {
+  res.status(503).json({ error: 'Review submission is temporarily unavailable while the production review service is being migrated.' });
 });
 
 productRouter.get('/delivery-zones', async (_req, res) => {
@@ -187,13 +160,9 @@ productRouter.get('/delivery-zones', async (_req, res) => {
 productRouter.get('/settings', async (_req, res) => {
   if (!requireCatalogDatabase(res)) return;
   try {
-    const { data, error } = await serverSupabase.from('business_settings').select('*');
+    const { data, error } = await serverSupabase.from('business_settings').select('*').eq('id', 'default').maybeSingle();
     if (error) throw error;
-    const settings = (data || []).reduce((acc: Record<string, any>, row: any) => {
-      acc[row.key] = row.value;
-      return acc;
-    }, {});
-    res.json({ settings });
+    res.json({ settings: data || null });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Error fetching settings.' });
   }
