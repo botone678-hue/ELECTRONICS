@@ -35,11 +35,52 @@ async function loadOrder(id: string) {
   return mapOrder(row, items || []);
 }
 
-async function loadOrderByNumber(orderNumber: string) {
-  const { data: row, error } = await serverSupabase.from('orders').select('*').ilike('order_number', orderNumber).maybeSingle();
+async function loadPublicTrackingOrder(id: string) {
+  const { data: row, error } = await serverSupabase
+    .from('orders')
+    .select('id,order_number,delivery_zone_name,delivery_fee,subtotal,total,payment_method,payment_status,status,status_history,created_at,updated_at')
+    .eq('id', id)
+    .maybeSingle();
   if (error) throw error;
   if (!row) return null;
-  return loadOrder(row.id);
+
+  const { data: items, error: itemError } = await serverSupabase
+    .from('order_items')
+    .select('product_id,product_name,sku,image,price_snapshot,quantity,subtotal')
+    .eq('order_id', id)
+    .order('created_at', { ascending: true });
+  if (itemError) throw itemError;
+
+  return {
+    id: row.id,
+    orderNumber: row.order_number,
+    deliveryZoneName: row.delivery_zone_name,
+    deliveryFee: Number(row.delivery_fee),
+    subtotal: Number(row.subtotal),
+    total: Number(row.total),
+    paymentMethod: row.payment_method,
+    paymentStatus: row.payment_status,
+    status: row.status,
+    statusHistory: row.status_history || [],
+    items: (items || []).map((i: any) => ({
+      productId: i.product_id,
+      productName: i.product_name,
+      sku: i.sku,
+      image: i.image || '',
+      priceSnapshot: Number(i.price_snapshot),
+      quantity: i.quantity,
+      subtotal: Number(i.subtotal)
+    })),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+async function loadOrderByNumber(orderNumber: string) {
+  const { data: row, error } = await serverSupabase.from('orders').select('id,order_number').ilike('order_number', orderNumber).maybeSingle();
+  if (error) throw error;
+  if (!row) return null;
+  return loadPublicTrackingOrder(row.id);
 }
 
 const handleCheckout = async (req: AuthRequest, res: Response) => {
@@ -125,19 +166,11 @@ orderRouter.post('/', optionalAuth, handleCheckout);
 orderRouter.get('/track/:query', async (req, res) => {
   try {
     const clean = req.params.query.trim();
-    let order = await loadOrderByNumber(clean);
-    if (!order) {
-      const normalized = clean.replace(/\s+/g, '');
-      if (!normalized) return res.status(400).json({ error: 'Please provide an order number or phone number.' });
-      const { data: rows, error } = await serverSupabase
-        .from('orders')
-        .select('id,order_number,customer_phone,status,payment_status,created_at,updated_at')
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      const match = (rows || []).find((r: any) => String(r.customer_phone || '').replace(/\s+/g, '') === normalized);
-      if (match) order = await loadOrder(match.id);
-    }
-    if (!order) return res.status(404).json({ error: `No order found for "${clean}". Please check your order number or phone number.` });
+    if (!clean) return res.status(400).json({ error: 'Please provide an order number.' });
+
+    const order = await loadOrderByNumber(clean);
+    if (!order) return res.status(404).json({ error: `No order found for "${clean}". Please check your order number.` });
+
     return res.json({ order });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Error tracking order.' });
