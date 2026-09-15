@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { UserRole } from './types';
-import { db } from './db';
 import { serverSupabase, isServerSupabaseConfigured } from './supabase';
 
 const JWT_SECRET = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET || '';
@@ -15,20 +14,26 @@ export interface AuthRequest extends Request {
   };
 }
 
+// Retained for compatibility with any non-Supabase integrations, but never
+// fabricate an unsigned session token. Production auth must be cryptographically signed.
 export function generateToken(user: { id: string; email: string; role: UserRole; name: string }): string {
-  if (!JWT_SECRET) return `session_${Buffer.from(JSON.stringify({ id: user.id, email: user.email, role: user.role, name: user.name, ts: Date.now() })).toString('base64url')}`;
-  return jwt.sign({ id: user.id, email: user.email, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '30d' });
+  if (!JWT_SECRET) throw new Error('JWT signing secret is not configured.');
+  return jwt.sign(
+    { id: user.id, email: user.email, role: user.role, name: user.name },
+    JWT_SECRET,
+    { expiresIn: '30d' }
+  );
 }
 
 export async function verifyToken(token: string) {
   if (!token) return null;
 
+  // When Supabase is configured, bearer tokens are verified against Supabase Auth.
+  // Do not fall back to unsigned/local tokens because that would allow forged identities.
   if (isServerSupabaseConfigured) {
     try {
       const { data: { user }, error } = await serverSupabase.auth.getUser(token);
       if (!error && user) {
-        // A missing profile is valid for a newly-created customer. Do not use
-        // .single(), which turns that normal case into a 406 response.
         const { data: profile } = await serverSupabase
           .from('profiles')
           .select('id,role,name')
@@ -42,19 +47,14 @@ export async function verifyToken(token: string) {
           name: profile?.name || user.user_metadata?.name || user.email?.split('@')[0] || 'User'
         };
       }
+      return null;
     } catch (error) {
-      console.warn('[auth][verifyToken] Supabase verification failed; continuing with fallback:', error instanceof Error ? error.message : error);
-    }
-  }
-
-  if (token.startsWith('session_')) {
-    try {
-      return JSON.parse(Buffer.from(token.replace('session_', ''), 'base64url').toString('utf-8'));
-    } catch {
+      console.warn('[auth][verifyToken] Supabase verification failed:', error instanceof Error ? error.message : error);
       return null;
     }
   }
 
+  // Only permit signed JWT authentication when Supabase is not configured.
   if (JWT_SECRET) {
     try {
       return jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: UserRole; name: string };
@@ -69,7 +69,9 @@ export async function verifyToken(token: string) {
 export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'Authentication required. Please sign in.' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required. Please sign in.' });
+    }
     const decoded = await verifyToken(authHeader.slice(7));
     if (!decoded) return res.status(401).json({ error: 'Invalid or expired session. Please sign in again.' });
     req.user = decoded;
@@ -100,7 +102,6 @@ export async function optionalAuth(req: AuthRequest, _res: Response, next: NextF
       if (decoded) req.user = decoded;
     }
   } catch (error) {
-    // Optional authentication must never prevent checkout from reaching the order route.
     console.warn('[auth][optionalAuth] ignored authentication error:', error instanceof Error ? error.message : error);
   }
   return next();
