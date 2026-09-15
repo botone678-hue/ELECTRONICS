@@ -61,11 +61,6 @@ const handleCheckout = async (req: AuthRequest, res: Response) => {
     const normalizedPaymentMethod = paymentMethod === 'MPESA_ON_DELIVERY' ? 'MPESA_ON_DELIVERY' : 'CASH_ON_DELIVERY';
     const requestedCustomerId = req.user?.id || null;
 
-    // orders.customer_id has a foreign key to profiles(id). A newly-created
-    // auth user can exist before its profile row is created. Passing that auth
-    // UUID to place_order causes the RPC to fail with a FK violation. Resolve
-    // the profile first; if it does not exist, place the order as a guest/null
-    // customer instead. The customer's submitted contact details remain on the order.
     let customerId: string | null = null;
     if (requestedCustomerId) {
       const { data: profile, error: profileError } = await serverSupabase
@@ -131,12 +126,15 @@ orderRouter.get('/track/:query', async (req, res) => {
   try {
     const clean = req.params.query.trim();
     let order = await loadOrderByNumber(clean);
-    if (!order) order = await loadOrder(clean);
     if (!order) {
       const normalized = clean.replace(/\s+/g, '');
-      const { data: rows, error } = await serverSupabase.from('orders').select('*').order('created_at', { ascending: false });
+      if (!normalized) return res.status(400).json({ error: 'Please provide an order number or phone number.' });
+      const { data: rows, error } = await serverSupabase
+        .from('orders')
+        .select('id,order_number,customer_phone,status,payment_status,created_at,updated_at')
+        .order('created_at', { ascending: false });
       if (error) throw error;
-      const match = (rows || []).find((r: any) => r.customer_phone.replace(/\s+/g, '') === normalized);
+      const match = (rows || []).find((r: any) => String(r.customer_phone || '').replace(/\s+/g, '') === normalized);
       if (match) order = await loadOrder(match.id);
     }
     if (!order) return res.status(404).json({ error: `No order found for "${clean}". Please check your order number or phone number.` });
@@ -157,11 +155,15 @@ orderRouter.get('/my-orders', requireAuth, async (req: AuthRequest, res: Respons
   }
 });
 
-orderRouter.get('/:id', optionalAuth, async (req: AuthRequest, res: Response) => {
+orderRouter.get('/:id', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const order = await loadOrder(req.params.id);
     if (!order) return res.status(404).json({ error: 'Order not found.' });
-    if (req.user && req.user.role === 'customer' && order.customerId && order.customerId !== req.user.id) return res.status(403).json({ error: 'Unauthorized to view this order.' });
+
+    const isOwner = order.customerId && order.customerId === req.user!.id;
+    const isAdmin = req.user!.role === 'admin';
+    if (!isOwner && !isAdmin) return res.status(403).json({ error: 'Unauthorized to view this order.' });
+
     return res.json({ order });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Error loading order.' });
