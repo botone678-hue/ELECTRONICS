@@ -28,23 +28,34 @@ export function generateToken(user: { id: string; email: string; role: UserRole;
 export async function verifyToken(token: string) {
   if (!token) return null;
 
-  // When Supabase is configured, bearer tokens are verified against Supabase Auth.
-  // Do not fall back to unsigned/local tokens because that would allow forged identities.
+  // Supabase is authoritative in production. Never derive authorization
+  // roles from user_metadata because that metadata is not an authorization store.
   if (isServerSupabaseConfigured) {
     try {
       const { data: { user }, error } = await serverSupabase.auth.getUser(token);
       if (!error && user) {
-        const { data: profile } = await serverSupabase
+        const { data: profile, error: profileError } = await serverSupabase
           .from('profiles')
           .select('id,role,name')
           .eq('id', user.id)
           .maybeSingle();
 
+        if (profileError || !profile) {
+          console.warn('[auth][verifyToken] authenticated user has no valid application profile');
+          return null;
+        }
+
+        const role = profile.role as UserRole;
+        if (role !== 'customer' && role !== 'admin') {
+          console.warn('[auth][verifyToken] invalid profile role');
+          return null;
+        }
+
         return {
           id: user.id,
           email: user.email || '',
-          role: (profile?.role as UserRole) || (user.user_metadata?.role as UserRole) || 'customer',
-          name: profile?.name || user.user_metadata?.name || user.email?.split('@')[0] || 'User'
+          role,
+          name: profile.name || user.email?.split('@')[0] || 'User'
         };
       }
       return null;
@@ -55,9 +66,12 @@ export async function verifyToken(token: string) {
   }
 
   // Only permit signed JWT authentication when Supabase is not configured.
+  // Unsigned/local session tokens are never accepted.
   if (JWT_SECRET) {
     try {
-      return jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: UserRole; name: string };
+      const decoded = jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: UserRole; name: string };
+      if (decoded.role !== 'customer' && decoded.role !== 'admin') return null;
+      return decoded;
     } catch {
       return null;
     }
