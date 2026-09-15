@@ -26,6 +26,14 @@ const mapOrder = (row: any, items: any[] = []) => ({
   updatedAt: row.updated_at
 });
 
+const mapPublicTrackingOrder = (row: any) => ({
+  orderNumber: row.order_number,
+  status: row.status,
+  paymentStatus: row.payment_status,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
 async function loadOrder(id: string) {
   const { data: row, error } = await serverSupabase.from('orders').select('*').eq('id', id).maybeSingle();
   if (error) throw error;
@@ -36,10 +44,13 @@ async function loadOrder(id: string) {
 }
 
 async function loadOrderByNumber(orderNumber: string) {
-  const { data: row, error } = await serverSupabase.from('orders').select('*').ilike('order_number', orderNumber).maybeSingle();
+  const { data: row, error } = await serverSupabase
+    .from('orders')
+    .select('order_number,status,payment_status,created_at,updated_at')
+    .ilike('order_number', orderNumber)
+    .maybeSingle();
   if (error) throw error;
-  if (!row) return null;
-  return loadOrder(row.id);
+  return row ? mapPublicTrackingOrder(row) : null;
 }
 
 const handleCheckout = async (req: AuthRequest, res: Response) => {
@@ -125,19 +136,11 @@ orderRouter.post('/', optionalAuth, handleCheckout);
 orderRouter.get('/track/:query', async (req, res) => {
   try {
     const clean = req.params.query.trim();
-    let order = await loadOrderByNumber(clean);
-    if (!order) {
-      const normalized = clean.replace(/\s+/g, '');
-      if (!normalized) return res.status(400).json({ error: 'Please provide an order number or phone number.' });
-      const { data: rows, error } = await serverSupabase
-        .from('orders')
-        .select('id,order_number,customer_phone,status,payment_status,created_at,updated_at')
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      const match = (rows || []).find((r: any) => String(r.customer_phone || '').replace(/\s+/g, '') === normalized);
-      if (match) order = await loadOrder(match.id);
-    }
-    if (!order) return res.status(404).json({ error: `No order found for "${clean}". Please check your order number or phone number.` });
+    if (!clean) return res.status(400).json({ error: 'Please provide an order number.' });
+
+    const order = await loadOrderByNumber(clean);
+    if (!order) return res.status(404).json({ error: `No order found for "${clean}". Please check your order number.` });
+
     return res.json({ order });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Error tracking order.' });
